@@ -31,6 +31,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -74,7 +75,7 @@ import io.bosonnetwork.vertx.ContextualFuture;
  * It covers what an app needs to manage its account on a super node: proof-of-work registration,
  * devices, the account passphrase, the profile and avatar, the node's identity and status, and the
  * user's plan. HTTP is an implementation detail: callers deal in {@link Id}s, keys and the model
- * types of this package, and every call returns a {@link ContextualFuture}.
+ * types of this package, and every call returns a {@link CompletableFuture}.
  *
  * <h2>Identity and authentication</h2>
  * A client acts as one user, identified in one of two ways:
@@ -120,9 +121,12 @@ import io.bosonnetwork.vertx.ContextualFuture;
  *
  * <h2>Threading</h2>
  * The client is thread-safe. A call made on a Vert.x context completes on that context, and so do
- * the continuations chained on the returned {@link ContextualFuture}. A call made from any other
+ * the continuations chained on the returned {@link CompletableFuture}. A call made from any other
  * thread completes on a Vert.x event loop; such a caller may block on the returned future, which
- * must never be done on an event loop. Call {@link #close()} when done with the client.
+ * must never be done on an event loop. A Vert.x caller can turn a returned future back into a
+ * {@link io.vertx.core.Future} with {@code Future.fromCompletionStage}. Cancellation is not
+ * supported: {@code cancel()} returns {@code false} and never stops a call in flight. Call
+ * {@link #close()} when done with the client.
  *
  * <p>Example:
  * <pre>{@code
@@ -285,7 +289,7 @@ public class DirectorClient {
 	 *
 	 * @return a future completing when the client is closed
 	 */
-	public ContextualFuture<Void> close() {
+	public CompletableFuture<Void> close() {
 		if (!closed) {
 			closed = true;
 			webClient.close();
@@ -310,7 +314,7 @@ public class DirectorClient {
 	 *
 	 * @return a future completing with the node id
 	 */
-	public ContextualFuture<Id> getNodeId() {
+	public CompletableFuture<Id> getNodeId() {
 		checkOpen();
 		return toCaller(fetchNodeId());
 	}
@@ -321,7 +325,7 @@ public class DirectorClient {
 	 *
 	 * @return a future completing with the node status
 	 */
-	public ContextualFuture<NodeStatus> getNodeStatus() {
+	public CompletableFuture<NodeStatus> getNodeStatus() {
 		checkOpen();
 		return toCaller(call(HttpMethod.GET, "/node", null, false)
 				.compose(res -> decode(res, json(NodeStatus.class))));
@@ -356,7 +360,7 @@ public class DirectorClient {
 	 * @throws IllegalStateException if the client has no user key, or the registration names an
 	 *         initial device and the client has no device key
 	 */
-	public ContextualFuture<Void> registerUser(UserRegistration registration) {
+	public CompletableFuture<Void> registerUser(UserRegistration registration) {
 		Objects.requireNonNull(registration, "registration");
 		checkOpen();
 
@@ -440,7 +444,7 @@ public class DirectorClient {
 	 * @return a future completing when the device is registered
 	 * @throws IllegalStateException if the client has no device key, or no user identity
 	 */
-	public ContextualFuture<Void> registerDevice(String deviceName, String appName) {
+	public CompletableFuture<Void> registerDevice(String deviceName, String appName) {
 		return registerDevice(deviceName, appName, null);
 	}
 
@@ -453,7 +457,7 @@ public class DirectorClient {
 	 * @return a future completing when the device is registered
 	 * @throws IllegalStateException if the client has no device key, or no user identity
 	 */
-	public ContextualFuture<Void> registerDevice(String deviceName, String appName, @Nullable String passphrase) {
+	public CompletableFuture<Void> registerDevice(String deviceName, String appName, @Nullable String passphrase) {
 		Signature.KeyPair dk = deviceKey;
 		if (dk == null)
 			throw new IllegalStateException("No device key configured; pass the key of the device to register");
@@ -475,7 +479,7 @@ public class DirectorClient {
 	 * @return a future completing when the device is registered
 	 * @throws IllegalStateException if the client has no user identity
 	 */
-	public ContextualFuture<Void> registerDevice(Signature.KeyPair key, String deviceName, String appName,
+	public CompletableFuture<Void> registerDevice(Signature.KeyPair key, String deviceName, String appName,
 			@Nullable String passphrase) {
 		Objects.requireNonNull(key, "key");
 		Objects.requireNonNull(deviceName, "deviceName");
@@ -501,7 +505,7 @@ public class DirectorClient {
 	 * @return a future completing with the devices
 	 * @throws IllegalStateException if the client has no user identity
 	 */
-	public ContextualFuture<List<Device>> listDevices() {
+	public CompletableFuture<List<Device>> listDevices() {
 		checkOpen();
 		checkIdentity();
 		return toCaller(call(HttpMethod.GET, "/devices", null, true)
@@ -517,7 +521,7 @@ public class DirectorClient {
 	 *         {@link NotFoundException} if the user has no such device
 	 * @throws IllegalStateException if the client has no user identity
 	 */
-	public ContextualFuture<Void> removeDevice(Id deviceId) {
+	public CompletableFuture<Void> removeDevice(Id deviceId) {
 		return removeDevice(deviceId, null);
 	}
 
@@ -530,7 +534,7 @@ public class DirectorClient {
 	 *         {@link NotFoundException} if the user has no such device
 	 * @throws IllegalStateException if the client has no user identity
 	 */
-	public ContextualFuture<Void> removeDevice(Id deviceId, @Nullable String passphrase) {
+	public CompletableFuture<Void> removeDevice(Id deviceId, @Nullable String passphrase) {
 		Objects.requireNonNull(deviceId, "deviceId");
 		checkOpen();
 		checkIdentity();
@@ -557,7 +561,7 @@ public class DirectorClient {
 	 * @throws IllegalArgumentException if the passphrase is empty
 	 * @throws IllegalStateException if the client has no user identity
 	 */
-	public ContextualFuture<Void> setPassphrase(String passphrase) {
+	public CompletableFuture<Void> setPassphrase(String passphrase) {
 		checkPassphrase(passphrase, "passphrase");
 		checkOpen();
 		checkIdentity();
@@ -578,7 +582,7 @@ public class DirectorClient {
 	 * @throws IllegalArgumentException if either passphrase is empty
 	 * @throws IllegalStateException if the client has no user identity
 	 */
-	public ContextualFuture<Void> updatePassphrase(String currentPassphrase, String newPassphrase) {
+	public CompletableFuture<Void> updatePassphrase(String currentPassphrase, String newPassphrase) {
 		checkPassphrase(currentPassphrase, "currentPassphrase");
 		checkPassphrase(newPassphrase, "newPassphrase");
 		checkOpen();
@@ -600,7 +604,7 @@ public class DirectorClient {
 	 * @throws IllegalArgumentException if the passphrase is empty
 	 * @throws IllegalStateException if the client has no user identity
 	 */
-	public ContextualFuture<Void> clearPassphrase(String currentPassphrase) {
+	public CompletableFuture<Void> clearPassphrase(String currentPassphrase) {
 		checkPassphrase(currentPassphrase, "currentPassphrase");
 		checkOpen();
 		checkIdentity();
@@ -618,7 +622,7 @@ public class DirectorClient {
 	 * @return a future completing with the profile
 	 * @throws IllegalStateException if the client has no user identity
 	 */
-	public ContextualFuture<Profile> getProfile() {
+	public CompletableFuture<Profile> getProfile() {
 		checkOpen();
 		checkIdentity();
 		return toCaller(fetchProfile());
@@ -633,7 +637,7 @@ public class DirectorClient {
 	 * @throws IllegalArgumentException if the update changes nothing
 	 * @throws IllegalStateException if the client has no user identity
 	 */
-	public ContextualFuture<Void> updateProfile(ProfileUpdate update) {
+	public CompletableFuture<Void> updateProfile(ProfileUpdate update) {
 		return updateProfile(update, null);
 	}
 
@@ -646,7 +650,7 @@ public class DirectorClient {
 	 * @throws IllegalArgumentException if the update changes nothing
 	 * @throws IllegalStateException if the client has no user identity
 	 */
-	public ContextualFuture<Void> updateProfile(ProfileUpdate update, @Nullable String passphrase) {
+	public CompletableFuture<Void> updateProfile(ProfileUpdate update, @Nullable String passphrase) {
 		Objects.requireNonNull(update, "update");
 		if (update.isEmpty())
 			throw new IllegalArgumentException("The profile update changes nothing");
@@ -675,7 +679,7 @@ public class DirectorClient {
 	 * @throws IllegalArgumentException if the image is empty or the type is not PNG or JPEG
 	 * @throws IllegalStateException if the client has no user identity
 	 */
-	public ContextualFuture<String> updateAvatar(byte[] image, String contentType) {
+	public CompletableFuture<String> updateAvatar(byte[] image, String contentType) {
 		Objects.requireNonNull(image, "image");
 		Objects.requireNonNull(contentType, "contentType");
 		if (image.length == 0)
@@ -697,7 +701,7 @@ public class DirectorClient {
 	 * @throws IllegalArgumentException if the file extension is not one of the above
 	 * @throws IllegalStateException if the client has no user identity
 	 */
-	public ContextualFuture<String> updateAvatar(Path file) {
+	public CompletableFuture<String> updateAvatar(Path file) {
 		Objects.requireNonNull(file, "file");
 		String type = avatarTypeOf(file);
 		checkOpen();
@@ -713,7 +717,7 @@ public class DirectorClient {
 	 * @return a future completing with the avatar, or with {@code null} if the user has none
 	 * @throws IllegalStateException if the client has no user identity
 	 */
-	public ContextualFuture<@Nullable Avatar> getAvatar() {
+	public CompletableFuture<@Nullable Avatar> getAvatar() {
 		checkOpen();
 		checkIdentity();
 
@@ -769,7 +773,7 @@ public class DirectorClient {
 	 * @return a future completing with the user's plan
 	 * @throws IllegalStateException if the client has no user identity
 	 */
-	public ContextualFuture<UserPlan> getPlan() {
+	public CompletableFuture<UserPlan> getPlan() {
 		checkOpen();
 		checkIdentity();
 

@@ -17,8 +17,9 @@ tokens or wire encodings.
 | Node | `getNodeId`, `getNodeStatus` |
 | Plan | `getPlan` - the plan name, its catalog entry and the active subscription |
 
-Every call returns a `ContextualFuture`, a `CompletableFuture` backed by a Vert.x `Future`: a call
-made on a Vert.x context completes on that context.
+Every call returns a `CompletableFuture` that completes on the caller's Vert.x context: a call made
+on a Vert.x context completes on that context, and so do the continuations chained on it. A Vert.x
+caller can convert one back with `Future.fromCompletionStage`. Cancellation is not supported.
 
 ## Dependency
 

@@ -5,8 +5,8 @@
  * {@linkplain io.bosonnetwork.director.client.DirectorClient#builder() builder}, registers a user
  * with proof-of-work, manages the user's devices, passphrase, profile and avatar, and reports the
  * node's identity and status and the user's plan. Every call is asynchronous and returns a
- * {@link io.bosonnetwork.vertx.ContextualFuture}; signing in, token renewal and the wire encoding
- * are handled by the client.
+ * {@link java.util.concurrent.CompletableFuture} that completes on the caller's Vert.x context;
+ * signing in, token renewal and the wire encoding are handled by the client.
  *
  * <h2>Errors</h2>
  * Failures are reported as {@link io.bosonnetwork.director.client.exceptions.DirectorException} or
