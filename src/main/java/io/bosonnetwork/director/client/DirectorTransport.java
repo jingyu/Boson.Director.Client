@@ -35,16 +35,16 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JavaType;
 import io.vertx.core.Context;
 import io.vertx.core.Future;
+import io.vertx.core.MultiMap;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpMethod;
+import io.vertx.core.http.RequestOptions;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.TrustOptions;
-import io.vertx.ext.web.client.HttpRequest;
-import io.vertx.ext.web.client.HttpResponse;
-import io.vertx.ext.web.client.WebClient;
-import io.vertx.ext.web.client.WebClientOptions;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 
@@ -99,7 +99,7 @@ final class DirectorTransport {
 	// Director URL path (sans trailing slash), the API version prefix and the API path; request paths
 	// append to it.
 	private final String basePath;
-	private final WebClient webClient;
+	private final HttpClient httpClient;
 
 	private volatile boolean closed;
 
@@ -118,7 +118,7 @@ final class DirectorTransport {
 		boolean ssl = directorUrl.getProtocol().equals("https");
 		this.basePath = directorUrl.getPath().replaceAll("/+$", "") + API_VERSION_PREFIX + apiPath;
 
-		WebClientOptions options = new WebClientOptions();
+		HttpClientOptions options = new HttpClientOptions();
 		options.setSsl(ssl);
 		options.setDefaultHost(directorUrl.getHost());
 		options.setDefaultPort(directorUrl.getPort() > 0 ? directorUrl.getPort() : directorUrl.getDefaultPort());
@@ -127,9 +127,10 @@ final class DirectorTransport {
 		options.setConnectTimeout(10_000);
 		options.setIdleTimeout(60);
 		options.setIdleTimeoutUnit(TimeUnit.SECONDS);
-		// The Director never redirects an API call. Refuse to follow a redirect rather than repeat the
-		// request, bearer token included, to wherever it points.
-		options.setFollowRedirects(false);
+		// The Director never redirects an API call. Follow no redirect, rather than repeat the request -
+		// bearer token included - to wherever it points: a 3xx comes back as a response, and the status
+		// check fails it. Set on the client rather than per request, so that no request can opt back in.
+		options.setMaxRedirects(0);
 
 		if (ssl) {
 			options.setEnabledSecureTransportProtocols(Set.of("TLSv1.2", "TLSv1.3"));
@@ -140,14 +141,15 @@ final class DirectorTransport {
 						new HybridTrustManager(nodeId.toString(), nodeId.bytesUnsafe())));
 		}
 
-		this.webClient = WebClient.create(vertx, options);
+		this.httpClient = vertx.createHttpClient(options);
 	}
 
-	void close() {
-		if (!closed) {
-			closed = true;
-			webClient.close();
-		}
+	Future<Void> close() {
+		if (closed)
+			return Future.succeededFuture();
+
+		closed = true;
+		return httpClient.close();
 	}
 
 	boolean isClosed() {
@@ -160,7 +162,7 @@ final class DirectorTransport {
 	}
 
 	// Sends a request with an optional JSON body. See call(HttpMethod, String, Buffer, String, TokenSource).
-	Future<HttpResponse<Buffer>> call(HttpMethod method, String path,
+	Future<Response> call(HttpMethod method, String path,
 			@Nullable Map<String, @Nullable Object> json, @Nullable TokenSource tokens) {
 		Buffer body = null;
 		if (json != null) {
@@ -178,9 +180,9 @@ final class DirectorTransport {
 	// Sends a request to the API and fails the result on any non-2xx answer. A request with no token
 	// source is sent without credentials. Every API call of both clients goes through here, so adding
 	// one is a method that names its path and decodes its answer.
-	Future<HttpResponse<Buffer>> call(HttpMethod method, String path, @Nullable Buffer body,
+	Future<Response> call(HttpMethod method, String path, @Nullable Buffer body,
 			@Nullable String contentType, @Nullable TokenSource tokens) {
-		Future<HttpResponse<Buffer>> response;
+		Future<Response> response;
 		if (tokens == null) {
 			response = send(method, path, body, contentType, null);
 		} else {
@@ -198,21 +200,24 @@ final class DirectorTransport {
 				.recover(this::wrapError);
 	}
 
-	private Future<HttpResponse<Buffer>> send(HttpMethod method, String path, @Nullable Buffer body,
+	private Future<Response> send(HttpMethod method, String path, @Nullable Buffer body,
 			@Nullable String contentType, @Nullable String accessToken) {
-		HttpRequest<Buffer> request = webClient.request(method, basePath + path);
+		RequestOptions request = new RequestOptions()
+				.setMethod(method)
+				.setURI(basePath + path);
 		if (accessToken != null)
 			request.putHeader("Authorization", "Bearer " + accessToken);
-
-		if (body == null)
-			return request.send();
-
-		if (contentType != null)
+		if (body != null && contentType != null)
 			request.putHeader("Content-Type", contentType);
-		return request.sendBuffer(body);
+
+		// The body is read whatever the status: an error's explanation is in it, and a response left
+		// unread would keep its connection out of the pool.
+		return httpClient.request(request)
+				.compose(req -> body != null ? req.send(body) : req.send())
+				.compose(res -> res.body().map(content -> new Response(res.statusCode(), res.headers(), content)));
 	}
 
-	private Future<HttpResponse<Buffer>> checkStatus(HttpMethod method, String path, HttpResponse<Buffer> response) {
+	private Future<Response> checkStatus(HttpMethod method, String path, Response response) {
 		int status = response.statusCode();
 		if (status >= 200 && status < 300)
 			return Future.succeededFuture(response);
@@ -241,12 +246,43 @@ final class DirectorTransport {
 		return Future.failedFuture(new DirectorException("Director request failed: " + e.getMessage(), e));
 	}
 
+	/**
+	 * A Director answer with its body read: what the clients check and decode.
+	 */
+	static final class Response {
+		private final int statusCode;
+		private final MultiMap headers;
+		private final Buffer body;
+
+		private Response(int statusCode, MultiMap headers, Buffer body) {
+			this.statusCode = statusCode;
+			this.headers = headers;
+			this.body = body;
+		}
+
+		int statusCode() {
+			return statusCode;
+		}
+
+		@Nullable String getHeader(String name) {
+			return headers.get(name);
+		}
+
+		Buffer body() {
+			return body;
+		}
+
+		String bodyAsString() {
+			return body.toString(StandardCharsets.UTF_8);
+		}
+	}
+
 	// ---- Decoding ------------------------------------------------------------------------------
 
-	static <T> Future<T> decode(HttpResponse<Buffer> response, BodyParser<T> parser) {
+	static <T> Future<T> decode(Response response, BodyParser<T> parser) {
 		Buffer body = response.body();
 		try {
-			if (body == null || body.length() == 0)
+			if (body.length() == 0)
 				throw new IllegalArgumentException("empty response body");
 
 			return Future.succeededFuture(parser.parse(body));

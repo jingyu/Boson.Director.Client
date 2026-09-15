@@ -47,7 +47,6 @@ import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpMethod;
-import io.vertx.ext.web.client.HttpResponse;
 import org.jspecify.annotations.NullUnmarked;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -61,7 +60,6 @@ import io.bosonnetwork.director.client.exceptions.DirectorException;
 import io.bosonnetwork.director.client.exceptions.NotFoundException;
 import io.bosonnetwork.json.Json;
 import io.bosonnetwork.service.AccessScope;
-import io.bosonnetwork.vertx.ContextualFuture;
 import io.bosonnetwork.web.PaginatedResult;
 
 /**
@@ -219,8 +217,7 @@ public class DirectorAdmin {
 	 * @return a future completing when the client is closed
 	 */
 	public CompletableFuture<Void> close() {
-		transport.close();
-		return ContextualFuture.succeededFuture();
+		return toCaller(transport.close());
 	}
 
 	/**
@@ -1157,7 +1154,7 @@ public class DirectorAdmin {
 
 	// Sends an authenticated request to the admin API. Every call goes through here, so adding one to
 	// this client is a method that names its path and decodes its answer.
-	private Future<HttpResponse<Buffer>> call(HttpMethod method, String path,
+	private Future<DirectorTransport.Response> call(HttpMethod method, String path,
 			@Nullable Map<String, @Nullable Object> body) {
 		return transport.call(method, path, body, tokens);
 	}

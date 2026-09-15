@@ -45,7 +45,6 @@ import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.json.JsonObject;
-import io.vertx.ext.web.client.HttpResponse;
 import org.jspecify.annotations.NullUnmarked;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -61,7 +60,6 @@ import io.bosonnetwork.director.client.exceptions.DirectorException;
 import io.bosonnetwork.director.client.exceptions.NotFoundException;
 import io.bosonnetwork.director.client.exceptions.RegistrationDisabledException;
 import io.bosonnetwork.json.Json;
-import io.bosonnetwork.vertx.ContextualFuture;
 
 /**
  * An asynchronous client for the client API of a Boson Director, the account service of a Boson
@@ -265,8 +263,7 @@ public class DirectorClient {
 	 * @return a future completing when the client is closed
 	 */
 	public CompletableFuture<Void> close() {
-		transport.close();
-		return ContextualFuture.succeededFuture();
+		return toCaller(transport.close());
 	}
 
 	/**
@@ -694,10 +691,8 @@ public class DirectorClient {
 
 		Future<@Nullable Avatar> avatar = call(HttpMethod.GET, "/avatar", null, true)
 				.<@Nullable Avatar>map(res -> {
-					Buffer body = res.body();
 					String type = res.getHeader("Content-Type");
-					return new Avatar(type != null ? type : "application/octet-stream",
-							body != null ? body.getBytes() : new byte[0]);
+					return new Avatar(type != null ? type : "application/octet-stream", res.body().getBytes());
 				})
 				.recover(e -> e instanceof NotFoundException ? 
 						Future.<@Nullable Avatar>succeededFuture(null) : Future.<@Nullable Avatar>failedFuture(e));
@@ -868,12 +863,12 @@ public class DirectorClient {
 	// Sends a request with an optional JSON body to the client API. Every API call goes through here or
 	// the overload below, so adding one to this client is a method that names its path and decodes its
 	// answer.
-	private Future<HttpResponse<Buffer>> call(HttpMethod method, String path,
+	private Future<DirectorTransport.Response> call(HttpMethod method, String path,
 			@Nullable Map<String, @Nullable Object> json, boolean authenticated) {
 		return transport.call(method, path, json, authenticated ? tokens : null);
 	}
 
-	private Future<HttpResponse<Buffer>> call(HttpMethod method, String path, @Nullable Buffer body,
+	private Future<DirectorTransport.Response> call(HttpMethod method, String path, @Nullable Buffer body,
 			@Nullable String contentType, boolean authenticated) {
 		return transport.call(method, path, body, contentType, authenticated ? tokens : null);
 	}
