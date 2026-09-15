@@ -32,10 +32,12 @@ import org.jspecify.annotations.Nullable;
 import io.bosonnetwork.Id;
 
 /**
- * The profile of the user a {@link DirectorClient} acts as, as the Director records it.
+ * A user account as the Director records it.
  * <p>
- * Obtained from {@link DirectorClient#getProfile()} and changed with
- * {@link DirectorClient#updateProfile(ProfileUpdate)}. Immutable.
+ * A {@link DirectorClient} obtains the profile of the user it acts as with
+ * {@link DirectorClient#getProfile()}, and changes it with
+ * {@link DirectorClient#updateProfile(ProfileUpdate)}. A {@link DirectorAdmin} lists, looks up and
+ * changes every user's account. Immutable.
  */
 public class Profile {
 	private final Id id;

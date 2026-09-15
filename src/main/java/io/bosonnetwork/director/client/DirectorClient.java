@@ -22,6 +22,14 @@
 
 package io.bosonnetwork.director.client;
 
+import static io.bosonnetwork.director.client.DirectorTransport.decode;
+import static io.bosonnetwork.director.client.DirectorTransport.decodeKey;
+import static io.bosonnetwork.director.client.DirectorTransport.json;
+import static io.bosonnetwork.director.client.DirectorTransport.jsonList;
+import static io.bosonnetwork.director.client.DirectorTransport.putIfNotNull;
+import static io.bosonnetwork.director.client.DirectorTransport.stringField;
+import static io.bosonnetwork.director.client.DirectorTransport.toCaller;
+
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.file.Path;
@@ -30,31 +38,20 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JavaType;
-import io.vertx.core.Context;
 import io.vertx.core.Future;
-import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.net.TrustOptions;
-import io.vertx.ext.web.client.HttpRequest;
 import io.vertx.ext.web.client.HttpResponse;
-import io.vertx.ext.web.client.WebClient;
-import io.vertx.ext.web.client.WebClientOptions;
 import org.jspecify.annotations.NullUnmarked;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.bosonnetwork.Id;
-import io.bosonnetwork.crypto.HybridTrustManager;
 import io.bosonnetwork.crypto.Random;
 import io.bosonnetwork.crypto.Signature;
 import io.bosonnetwork.crypto.pow.RegistrationPowClient;
@@ -64,8 +61,6 @@ import io.bosonnetwork.director.client.exceptions.DirectorException;
 import io.bosonnetwork.director.client.exceptions.NotFoundException;
 import io.bosonnetwork.director.client.exceptions.RegistrationDisabledException;
 import io.bosonnetwork.json.Json;
-import io.bosonnetwork.utils.Base58;
-import io.bosonnetwork.utils.Hex;
 import io.bosonnetwork.vertx.ContextualFuture;
 
 /**
@@ -143,8 +138,8 @@ import io.bosonnetwork.vertx.ContextualFuture;
  * }</pre>
  */
 public class DirectorClient {
-	// Every client API lives under this path of the Director URL.
-	private static final String CLIENT_API_PREFIX = "/api/v1/client";
+	// Every client API lives under this path of the Director API.
+	private static final String CLIENT_API = "/client";
 
 	// Size of the random nonce signed to obtain an access token.
 	private static final int AUTH_NONCE_SIZE = 32;
@@ -159,12 +154,6 @@ public class DirectorClient {
 	// Nonces the proof-of-work solver may try before it gives up (see RegistrationPowClient.solve).
 	private static final long MAX_POW_NONCES = 1_000_000L;
 
-	// Seconds an idle connection may be reused from the pool. Kept short for the same reason as in
-	// the Ion Store client: mobile platforms and NAT gateways silently drop idle connections, and a
-	// dropped pooled connection is indistinguishable from a live one until a request fails on it.
-	private static final int KEEP_ALIVE_TIMEOUT = 20;
-
-	private static final String CONTENT_TYPE_JSON = "application/json";
 	private static final String CONTENT_TYPE_PNG = "image/png";
 	private static final String CONTENT_TYPE_JPEG = "image/jpeg";
 
@@ -173,8 +162,6 @@ public class DirectorClient {
 
 	private final Vertx vertx;
 	private final URL directorUrl;
-	// Director URL path (sans trailing slash) plus the client API prefix; request paths append to it.
-	private final String basePath;
 
 	private final @Nullable Id nodeId;
 	private final Signature.@Nullable KeyPair userKey;
@@ -182,15 +169,14 @@ public class DirectorClient {
 	private final Signature.@Nullable KeyPair deviceKey;
 	private final @Nullable Id deviceId;
 
-	private final WebClient webClient;
+	private final DirectorTransport transport;
+	private final DirectorTransport.TokenSource tokens;
 
 	private final Object tokenLock = new Object();
 	// The cached access token, and the sign-in shared by the calls waiting for one; both guarded by
 	// tokenLock.
 	private @Nullable AccessToken token;
 	private @Nullable Future<String> signIn;
-
-	private volatile boolean closed;
 
 	private static final Logger log = LoggerFactory.getLogger(DirectorClient.class);
 
@@ -219,32 +205,21 @@ public class DirectorClient {
 		if (userId != null && userKey == null && deviceKey == null)
 			throw new IllegalArgumentException("A user identified by id needs a device key to sign in with");
 
-		boolean ssl = directorUrl.getProtocol().equals("https");
-		this.basePath = directorUrl.getPath().replaceAll("/+$", "") + CLIENT_API_PREFIX;
+		this.transport = new DirectorTransport(vertx, directorUrl, CLIENT_API, nodeId, log);
+		this.tokens = new DirectorTransport.TokenSource() {
+			@Override
+			public Future<String> token() {
+				return accessToken();
+			}
 
-		WebClientOptions options = new WebClientOptions();
-		options.setSsl(ssl);
-		options.setDefaultHost(directorUrl.getHost());
-		options.setDefaultPort(directorUrl.getPort() > 0 ? directorUrl.getPort() : directorUrl.getDefaultPort());
-		options.setKeepAlive(true);
-		options.setKeepAliveTimeout(KEEP_ALIVE_TIMEOUT);
-		options.setConnectTimeout(10_000);
-		options.setIdleTimeout(60);
-		options.setIdleTimeoutUnit(TimeUnit.SECONDS);
-		// The Director never redirects an API call. Refuse to follow a redirect rather than repeat the
-		// request, bearer token included, to wherever it points.
-		options.setFollowRedirects(false);
-
-		if (ssl) {
-			options.setEnabledSecureTransportProtocols(Set.of("TLSv1.2", "TLSv1.3"));
-			// CA-signed certificates are validated as usual either way; with the node id known, a
-			// self-signed certificate pinned to it is accepted too.
-			if (nodeId != null)
-				options.setTrustOptions(TrustOptions.wrap(
-						new HybridTrustManager(nodeId.toString(), nodeId.bytesUnsafe())));
-		}
-
-		this.webClient = WebClient.create(vertx, options);
+			@Override
+			public boolean rejected(String token) {
+				// Rejected before it was acted on - the token expired early, or the Director was restarted
+				// with a new key. A new sign-in fixes either.
+				invalidateToken(token);
+				return true;
+			}
+		};
 	}
 
 	/**
@@ -290,11 +265,7 @@ public class DirectorClient {
 	 * @return a future completing when the client is closed
 	 */
 	public CompletableFuture<Void> close() {
-		if (!closed) {
-			closed = true;
-			webClient.close();
-		}
-
+		transport.close();
 		return ContextualFuture.succeededFuture();
 	}
 
@@ -304,7 +275,7 @@ public class DirectorClient {
 	 * @return {@code true} if the client is closed
 	 */
 	public boolean isClosed() {
-		return closed;
+		return transport.isClosed();
 	}
 
 	// ---- Node ----------------------------------------------------------------------------------
@@ -894,124 +865,17 @@ public class DirectorClient {
 
 	// ---- HTTP ----------------------------------------------------------------------------------
 
-	// Sends a request with an optional JSON body. See call(HttpMethod, String, Buffer, String, boolean).
+	// Sends a request with an optional JSON body to the client API. Every API call goes through here or
+	// the overload below, so adding one to this client is a method that names its path and decodes its
+	// answer.
 	private Future<HttpResponse<Buffer>> call(HttpMethod method, String path,
 			@Nullable Map<String, @Nullable Object> json, boolean authenticated) {
-		Buffer body = null;
-		if (json != null) {
-			try {
-				// Boson's codec: ids as base58, byte arrays as unpadded base64url - the Director's own.
-				body = Buffer.buffer(Json.objectMapper().writeValueAsBytes(json));
-			} catch (JsonProcessingException e) {
-				return Future.failedFuture(new DirectorException("Cannot encode the request: " + e.getMessage(), e));
-			}
-		}
-
-		return call(method, path, body, body != null ? CONTENT_TYPE_JSON : null, authenticated);
+		return transport.call(method, path, json, authenticated ? tokens : null);
 	}
 
-	// Sends a request to the client API and fails the result on any non-2xx answer. Every API call
-	// goes through here, so adding one to this client is a method that names its path and decodes
-	// its answer.
 	private Future<HttpResponse<Buffer>> call(HttpMethod method, String path, @Nullable Buffer body,
 			@Nullable String contentType, boolean authenticated) {
-		Future<HttpResponse<Buffer>> response;
-		if (!authenticated) {
-			response = send(method, path, body, contentType, null);
-		} else {
-			response = accessToken().compose(t -> send(method, path, body, contentType, t).compose(res -> {
-				if (res.statusCode() != 401)
-					return Future.succeededFuture(res);
-
-				// Rejected before it was acted on - the token expired early, or the Director was
-				// restarted with a new key. Sign in again and repeat the request once.
-				invalidateToken(t);
-				return accessToken().compose(fresh -> send(method, path, body, contentType, fresh));
-			}));
-		}
-
-		return response.compose(res -> checkStatus(method, path, res))
-				.recover(DirectorClient::wrapError);
-	}
-
-	private Future<HttpResponse<Buffer>> send(HttpMethod method, String path, @Nullable Buffer body,
-			@Nullable String contentType, @Nullable String accessToken) {
-		HttpRequest<Buffer> request = webClient.request(method, basePath + path);
-		if (accessToken != null)
-			request.putHeader("Authorization", "Bearer " + accessToken);
-
-		if (body == null)
-			return request.send();
-
-		if (contentType != null)
-			request.putHeader("Content-Type", contentType);
-		return request.sendBuffer(body);
-	}
-
-	private static Future<HttpResponse<Buffer>> checkStatus(HttpMethod method, String path, HttpResponse<Buffer> response) {
-		int status = response.statusCode();
-		if (status >= 200 && status < 300)
-			return Future.succeededFuture(response);
-
-		DirectorException error = DirectorException.fromResponse(status, response.bodyAsString(),
-				response.getHeader("Retry-After"));
-
-		// Refusals the caller can act on (bad request, auth, passphrase, conflict, rate limit) are
-		// expected and logged at debug; server-side failures at error.
-		if (status < 500)
-			log.debug("Director request {} {} refused: {} - {}", method, path, status, error.getMessage());
-		else
-			log.error("Director request {} {} failed: {} - {}", method, path, status, error.getMessage());
-
-		return Future.failedFuture(error);
-	}
-
-	private static <T> Future<T> wrapError(Throwable e) {
-		// Already classified (and, for HTTP errors, logged by checkStatus), or a precondition of this
-		// client rather than a failed request.
-		if (e instanceof DirectorException || e instanceof IllegalStateException)
-			return Future.failedFuture(e);
-
-		// Anything else means no answer: connection, TLS, timeout.
-		log.error("Director request failed: {}", e.getMessage(), e);
-		return Future.failedFuture(new DirectorException("Director request failed: " + e.getMessage(), e));
-	}
-
-	// ---- Decoding ------------------------------------------------------------------------------
-
-	@FunctionalInterface
-	private interface BodyParser<T> {
-		T parse(Buffer body) throws Exception;
-	}
-
-	private static <T> Future<T> decode(HttpResponse<Buffer> response, BodyParser<T> parser) {
-		Buffer body = response.body();
-		try {
-			if (body == null || body.length() == 0)
-				throw new IllegalArgumentException("empty response body");
-
-			return Future.succeededFuture(parser.parse(body));
-		} catch (Exception e) {
-			return Future.failedFuture(new DirectorException(response.statusCode(),
-					"Malformed Director response: " + e.getMessage(), e));
-		}
-	}
-
-	private static <T> BodyParser<T> json(Class<T> type) {
-		return body -> Json.objectMapper().readValue(body.getBytes(), type);
-	}
-
-	private static <T> BodyParser<List<T>> jsonList(Class<T> type) {
-		JavaType listType = Json.objectMapper().getTypeFactory().constructCollectionType(List.class, type);
-		return body -> Json.objectMapper().readValue(body.getBytes(), listType);
-	}
-
-	private static String stringField(Buffer body, String name) {
-		String value = new JsonObject(body).getString(name);
-		if (value == null || value.isEmpty())
-			throw new IllegalArgumentException("missing '" + name + "'");
-
-		return value;
+		return transport.call(method, path, body, contentType, authenticated ? tokens : null);
 	}
 
 	// A proof-of-work challenge, as issued by the Director.
@@ -1050,26 +914,8 @@ public class DirectorClient {
 
 	// ---- Helpers -------------------------------------------------------------------------------
 
-	// Completes on the calling Vert.x context, if there is one. A result can otherwise arrive on
-	// another context: a sign-in shared by concurrent calls completes on the context that started it.
-	private static <T extends @Nullable Object> ContextualFuture<T> toCaller(Future<T> future) {
-		Context caller = Vertx.currentContext();
-		if (caller == null)
-			return ContextualFuture.of(future);
-
-		Promise<T> promise = Promise.promise();
-		future.onComplete(ar -> {
-			if (Vertx.currentContext() == caller)
-				promise.handle(ar);
-			else
-				caller.runOnContext(v -> promise.handle(ar));
-		});
-		return ContextualFuture.of(promise.future());
-	}
-
 	private void checkOpen() {
-		if (closed)
-			throw new IllegalStateException("Client is closed");
+		transport.checkOpen();
 	}
 
 	private void checkIdentity() {
@@ -1081,23 +927,6 @@ public class DirectorClient {
 		Objects.requireNonNull(passphrase, name);
 		if (passphrase.isEmpty())
 			throw new IllegalArgumentException(name + " is empty");
-	}
-
-	private static void putIfNotNull(Map<String, @Nullable Object> map, String key, @Nullable Object value) {
-		if (value != null)
-			map.put(key, value);
-	}
-
-	private static Signature.KeyPair decodeKey(String privateKey) {
-		byte[] sk = privateKey.startsWith("0x") ? Hex.decode(privateKey.substring(2)) : Base58.decode(privateKey);
-		return decodeKey(sk);
-	}
-
-	private static Signature.KeyPair decodeKey(byte[] privateKey) {
-		if (privateKey.length != Signature.PrivateKey.BYTES)
-			throw new IllegalArgumentException("Invalid private key");
-
-		return Signature.KeyPair.fromPrivateKey(privateKey);
 	}
 
 	/**

@@ -29,6 +29,10 @@
  * node's identity and status and the user's plan. Every call is asynchronous and returns a
  * {@link java.util.concurrent.CompletableFuture} that completes on the caller's Vert.x context;
  * signing in, token renewal and the wire encoding are handled by the client.
+ * <p>
+ * {@link io.bosonnetwork.director.client.DirectorAdmin} is its counterpart for the admin API: users
+ * and devices, subscriptions and payments, plans and their features, the node blacklist, and
+ * federation with other super nodes. It shares the client's conventions and its transport.
  *
  * <h2>Errors</h2>
  * Failures are reported as {@link io.bosonnetwork.director.client.exceptions.DirectorException} or

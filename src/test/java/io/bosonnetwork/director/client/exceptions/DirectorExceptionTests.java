@@ -40,6 +40,7 @@ public class DirectorExceptionTests {
 		assertInstanceOf(PassphraseRequiredException.class, DirectorException.fromResponse(428, "x", null));
 		assertInstanceOf(RateLimitException.class, DirectorException.fromResponse(429, "x", null));
 		assertInstanceOf(ServiceBusyException.class, DirectorException.fromResponse(503, "x", null));
+		assertInstanceOf(NotEnabledException.class, DirectorException.fromResponse(501, "x", null));
 
 		DirectorException server = DirectorException.fromResponse(502, "x", null);
 		assertInstanceOf(DirectorServerException.class, server);

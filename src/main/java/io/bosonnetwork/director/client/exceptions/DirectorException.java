@@ -109,6 +109,7 @@ public class DirectorException extends BosonException {
 			case PassphraseRequiredException.STATUS -> new PassphraseRequiredException(message);
 			case RateLimitException.STATUS -> new RateLimitException(message, parseRetryAfter(retryAfter));
 			case ServiceBusyException.STATUS -> new ServiceBusyException(message, parseRetryAfter(retryAfter));
+			case NotEnabledException.STATUS -> new NotEnabledException(message);
 			default -> status >= 500 ? new DirectorServerException(status, message) : new DirectorException(status, message);
 		};
 	}

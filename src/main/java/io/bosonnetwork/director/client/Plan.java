@@ -34,7 +34,8 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * A plan from a super node's plan catalog: what it costs and how it is billed. Part of the
- * {@link UserPlan} returned by {@link DirectorClient#getPlan()}. Immutable.
+ * {@link UserPlan} returned by {@link DirectorClient#getPlan()}, and managed with a
+ * {@link DirectorAdmin}. Immutable.
  */
 public class Plan {
 	private final int id;
@@ -46,6 +47,8 @@ public class Plan {
 	private final Cycle cycle;
 	private final BigDecimal annuallyDiscount;
 	private final boolean active;
+	private final long createdAt;
+	private final long updatedAt;
 
 	/**
 	 * How a plan is billed.
@@ -77,7 +80,9 @@ public class Plan {
 			@JsonProperty(value = "currency", required = true) String currency,
 			@JsonProperty(value = "cycle", required = true) Cycle cycle,
 			@JsonProperty("annuallyDiscount") @Nullable BigDecimal annuallyDiscount,
-			@JsonProperty("active") boolean active) {
+			@JsonProperty("active") boolean active,
+			@JsonProperty("createdAt") long createdAt,
+			@JsonProperty("updatedAt") long updatedAt) {
 		this.id = id;
 		this.name = Objects.requireNonNull(name, "name");
 		this.description = description;
@@ -87,6 +92,8 @@ public class Plan {
 		this.cycle = Objects.requireNonNull(cycle, "cycle");
 		this.annuallyDiscount = annuallyDiscount != null ? annuallyDiscount : BigDecimal.ZERO;
 		this.active = active;
+		this.createdAt = createdAt;
+		this.updatedAt = updatedAt;
 	}
 
 	/**
@@ -168,6 +175,24 @@ public class Plan {
 	 */
 	public boolean isActive() {
 		return active;
+	}
+
+	/**
+	 * Returns when the plan was created.
+	 *
+	 * @return the creation time, in epoch milliseconds
+	 */
+	public long getCreatedAt() {
+		return createdAt;
+	}
+
+	/**
+	 * Returns when the plan was last changed.
+	 *
+	 * @return the update time, in epoch milliseconds
+	 */
+	public long getUpdatedAt() {
+		return updatedAt;
 	}
 
 	/**

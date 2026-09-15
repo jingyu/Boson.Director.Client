@@ -22,100 +22,60 @@
 
 package io.bosonnetwork.director.client;
 
-import java.util.Locale;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.annotation.JsonValue;
 import org.jspecify.annotations.Nullable;
 
-import io.bosonnetwork.Id;
-
 /**
- * A user's subscription to a paid plan. Part of the {@link UserPlan} returned by
- * {@link DirectorClient#getPlan()}, and managed with a {@link DirectorAdmin}. Immutable.
+ * What a plan grants on one service: a feature document that the service reads, such as its limits
+ * for the plan's subscribers. Obtained from a {@link DirectorAdmin}. Immutable.
  */
-public class Subscription {
-	private final long id;
-	private final Id userId;
+public class Feature {
+	private final int id;
 	private final int planId;
 	private final @Nullable String planName;
-	private final Status status;
-	private final long startDate;
-	private final long endDate;
+	private final String serviceId;
+	private final Map<String, @Nullable Object> feature;
 	private final long createdAt;
 	private final long updatedAt;
 
-	/**
-	 * The state of a subscription.
-	 */
-	public enum Status {
-		/** Created, waiting for its first payment. */
-		PENDING,
-		/** Paid and in force. */
-		ACTIVE,
-		/** In force, but a renewal payment is overdue. */
-		PAST_DUE,
-		/** Ran out. */
-		EXPIRED,
-		/** Cancelled. */
-		CANCELED;
-
-		@JsonCreator
-		static Status of(String name) {
-			return valueOf(name.toUpperCase(Locale.ROOT));
-		}
-
-		@JsonValue
-		@Override
-		public String toString() {
-			return name().toLowerCase(Locale.ROOT);
-		}
-	}
-
 	@JsonCreator
-	Subscription(@JsonProperty(value = "id", required = true) long id,
-			@JsonProperty(value = "userId", required = true) Id userId,
+	Feature(@JsonProperty(value = "id", required = true) int id,
 			@JsonProperty(value = "planId", required = true) int planId,
 			@JsonProperty("planName") @Nullable String planName,
-			@JsonProperty(value = "status", required = true) Status status,
-			@JsonProperty("startDate") long startDate,
-			@JsonProperty("endDate") long endDate,
+			@JsonProperty(value = "serviceId", required = true) String serviceId,
+			@JsonProperty("feature") @Nullable Map<String, @Nullable Object> feature,
 			@JsonProperty("createdAt") long createdAt,
 			@JsonProperty("updatedAt") long updatedAt) {
 		this.id = id;
-		this.userId = Objects.requireNonNull(userId, "userId");
 		this.planId = planId;
 		this.planName = planName;
-		this.status = Objects.requireNonNull(status, "status");
-		this.startDate = startDate;
-		this.endDate = endDate;
+		this.serviceId = Objects.requireNonNull(serviceId, "serviceId");
+		Map<String, @Nullable Object> copy = new LinkedHashMap<>();
+		if (feature != null)
+			copy.putAll(feature);
+		this.feature = Collections.unmodifiableMap(copy);
 		this.createdAt = createdAt;
 		this.updatedAt = updatedAt;
 	}
 
 	/**
-	 * Returns the subscription id.
+	 * Returns the feature id.
 	 *
-	 * @return the subscription id
+	 * @return the feature id
 	 */
-	public long getId() {
+	public int getId() {
 		return id;
 	}
 
 	/**
-	 * Returns the id of the subscribed user.
-	 *
-	 * @return the user id
-	 */
-	public Id getUserId() {
-		return userId;
-	}
-
-	/**
-	 * Returns the id of the subscribed plan.
+	 * Returns the id of the plan the feature belongs to.
 	 *
 	 * @return the plan id
 	 */
@@ -124,7 +84,7 @@ public class Subscription {
 	}
 
 	/**
-	 * Returns the name of the subscribed plan.
+	 * Returns the name of the plan the feature belongs to.
 	 *
 	 * @return the plan name, if reported
 	 */
@@ -133,34 +93,25 @@ public class Subscription {
 	}
 
 	/**
-	 * Returns the state of the subscription.
+	 * Returns the id of the service the feature applies to, such as {@code io.bosonnetwork.ionstore}.
 	 *
-	 * @return the status
+	 * @return the service id
 	 */
-	public Status getStatus() {
-		return status;
+	public String getServiceId() {
+		return serviceId;
 	}
 
 	/**
-	 * Returns when the subscription started.
+	 * Returns the feature document, as the service reads it.
 	 *
-	 * @return the start time, in epoch milliseconds
+	 * @return the feature document, possibly empty
 	 */
-	public long getStartDate() {
-		return startDate;
+	public Map<String, @Nullable Object> getFeature() {
+		return feature;
 	}
 
 	/**
-	 * Returns when the subscription ends.
-	 *
-	 * @return the end time, in epoch milliseconds, or {@code 0} if it has no end date
-	 */
-	public long getEndDate() {
-		return endDate;
-	}
-
-	/**
-	 * Returns when the subscription was created.
+	 * Returns when the feature was created.
 	 *
 	 * @return the creation time, in epoch milliseconds
 	 */
@@ -169,7 +120,7 @@ public class Subscription {
 	}
 
 	/**
-	 * Returns when the subscription was last changed.
+	 * Returns when the feature was last changed.
 	 *
 	 * @return the update time, in epoch milliseconds
 	 */
@@ -179,7 +130,6 @@ public class Subscription {
 
 	@Override
 	public String toString() {
-		return "Subscription{id=" + id + ", userId=" + userId + ", planId=" + planId + ", status=" + status +
-				", startDate=" + startDate + ", endDate=" + endDate + "}";
+		return "Feature{id=" + id + ", planId=" + planId + ", serviceId=" + serviceId + ", feature=" + feature + "}";
 	}
 }

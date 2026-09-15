@@ -100,13 +100,44 @@ Use an `https` Director URL for any Director that is not on the local machine. A
 a public CA is validated as usual. Configure `nodeId(...)` to also accept a self-signed Director
 certificate pinned to the node's id.
 
+## Admin client
+
+`DirectorAdmin` covers the Director's admin API: users and their devices, subscriptions and payments,
+plans and their per-service features, the node blacklist, and federation with other super nodes. It
+follows the conventions of `DirectorClient` - a builder, `CompletableFuture` results, the same
+exceptions - with these differences:
+
+- It acts as an administrator: the node's root user, or a user marked as an administrator. Any other
+  key is refused with `UnauthorizedException`.
+- It needs the node id as well as the key. There is no sign-in: the client issues its own short-lived
+  token, signed with the key and bound to the node id, so the token is only valid on that node.
+- A lookup completes with an empty `Optional` when there is nothing to find; changing or removing
+  something that does not exist fails with `NotFoundException`.
+- A list call returns everything, or one page with the totals (`PaginatedResult`). Where the Director
+  supports ordering, it takes `Sort` keys naming fields of the listed objects, such as
+  `Sort.desc("createdAt")`; each list call's Javadoc names the fields it accepts.
+
+```java
+DirectorAdmin admin = DirectorAdmin.builder()
+        .vertx(vertx)
+        .directorUrl("https://node.example.com:8443")
+        .nodeId(nodeId)
+        .userKey(adminKey)
+        .build();
+
+admin.addUser(new NewUser(userId, "initial-passphrase").name("Bob"))
+        .thenCompose(v -> admin.addSubscription(userId, "Pro", Subscription.Status.ACTIVE, 0, endDate))
+        .thenAccept(subscription -> System.out.println("Subscribed: " + subscription.getId()));
+```
+
 ## Errors
 
 Failures are `DirectorException`s carrying the HTTP status, with subclasses for the conditions
 worth handling: `InvalidRequestException` (400), `UnauthorizedException` (401),
 `ForbiddenException` (403), `NotFoundException` (404), `ConflictException` (409),
 `PassphraseRequiredException` (428), `RateLimitException` (429, with `getRetryAfter()`),
-`ServiceBusyException` (503) and `DirectorServerException` (other 5xx). A call that gets no answer
+`ServiceBusyException` (503), `NotEnabledException` (501, such as federation on a node that
+does not federate) and `DirectorServerException` (other 5xx). A call that gets no answer
 fails with status `DirectorException.NO_HTTP_STATUS`.
 
 Only a request rejected as unauthorized is repeated, once, after signing in again. Nothing else is
@@ -114,8 +145,8 @@ retried automatically.
 
 ## Adding a Director API
 
-Every call goes through one private helper in `DirectorClient` that signs in, sends the request and
-maps errors. A new API is one public method that names its path, builds its body, and decodes the
+Every call of both clients goes through the package-private `DirectorTransport`, which authenticates,
+sends the request and maps errors. A new API is one public method that names its path, builds its body, and decodes the
 answer with a model class (a plain class with a `@JsonCreator` constructor; not a record, since
 Jackson's record support breaks in Android release builds).
 
