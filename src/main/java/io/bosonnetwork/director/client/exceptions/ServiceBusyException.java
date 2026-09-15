@@ -34,6 +34,9 @@ public class ServiceBusyException extends DirectorException {
 	 */
 	public static final int STATUS = 503;
 
+	/**
+	 * How long to wait before retrying.
+	 */
 	private final long retryAfter;
 
 	/**

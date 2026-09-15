@@ -33,10 +33,8 @@ import java.util.concurrent.TimeUnit;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JavaType;
-import io.vertx.core.Context;
 import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
-import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
@@ -56,7 +54,6 @@ import io.bosonnetwork.director.client.exceptions.NotFoundException;
 import io.bosonnetwork.json.Json;
 import io.bosonnetwork.utils.Base58;
 import io.bosonnetwork.utils.Hex;
-import io.bosonnetwork.vertx.ContextualFuture;
 import io.bosonnetwork.web.PaginatedResult;
 
 /**
@@ -85,9 +82,10 @@ final class DirectorTransport {
 		// Returns a current access token.
 		Future<String> token();
 
-		// Called when the Director rejected the token as unauthorized. Returns whether a new token
-		// could succeed where this one failed, in which case the request is repeated once with it.
-		boolean rejected(String token);
+		// Called when the Director rejected the token as unauthorized, with its answer. Returns whether
+		// a new token could succeed where this one failed, in which case the request is repeated once
+		// with it.
+		boolean rejected(String token, Response response);
 	}
 
 	@FunctionalInterface
@@ -162,8 +160,13 @@ final class DirectorTransport {
 	}
 
 	// Sends a request with an optional JSON body. See call(HttpMethod, String, Buffer, String, TokenSource).
+	//
+	// Maps cross classes in this package as Map<String, ?> (or ? super Object where they are written to),
+	// never as Map<String, @Nullable Object>: javac before JDK 22 drops type-use annotations on type
+	// arguments it reads from class files, so a build that recompiles only some classes - an IDE's
+	// incremental build - would see Map<String, Object> and fail NullAway, while a full build passes.
 	Future<Response> call(HttpMethod method, String path,
-			@Nullable Map<String, @Nullable Object> json, @Nullable TokenSource tokens) {
+			@Nullable Map<String, ?> json, @Nullable TokenSource tokens) {
 		Buffer body = null;
 		if (json != null) {
 			try {
@@ -188,7 +191,7 @@ final class DirectorTransport {
 		} else {
 			TokenSource source = tokens;
 			response = source.token().compose(t -> send(method, path, body, contentType, t).compose(res -> {
-				if (res.statusCode() != 401 || !source.rejected(t))
+				if (res.statusCode() != 401 || !source.rejected(t, res))
 					return Future.succeededFuture(res);
 
 				// Rejected before it was acted on, and the token source can do better: repeat once.
@@ -322,29 +325,12 @@ final class DirectorTransport {
 
 	// ---- Helpers -------------------------------------------------------------------------------
 
-	// Completes on the calling Vert.x context, if there is one. A result can otherwise arrive on
-	// another context: a sign-in shared by concurrent calls completes on the context that started it.
-	static <T extends @Nullable Object> ContextualFuture<T> toCaller(Future<T> future) {
-		Context caller = Vertx.currentContext();
-		if (caller == null)
-			return ContextualFuture.of(future);
-
-		Promise<T> promise = Promise.promise();
-		future.onComplete(ar -> {
-			if (Vertx.currentContext() == caller)
-				promise.handle(ar);
-			else
-				caller.runOnContext(v -> promise.handle(ar));
-		});
-		return ContextualFuture.of(promise.future());
-	}
-
 	// Encodes a value for use as one path segment or one query parameter value.
 	static String encode(String value) {
 		return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
 	}
 
-	static void putIfNotNull(Map<String, @Nullable Object> map, String key, @Nullable Object value) {
+	static void putIfNotNull(Map<String, ? super Object> map, String key, @Nullable Object value) {
 		if (value != null)
 			map.put(key, value);
 	}

@@ -28,7 +28,6 @@ import static io.bosonnetwork.director.client.DirectorTransport.json;
 import static io.bosonnetwork.director.client.DirectorTransport.jsonList;
 import static io.bosonnetwork.director.client.DirectorTransport.putIfNotNull;
 import static io.bosonnetwork.director.client.DirectorTransport.stringField;
-import static io.bosonnetwork.director.client.DirectorTransport.toCaller;
 
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -51,15 +50,16 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.bosonnetwork.Id;
+import io.bosonnetwork.crypto.CryptoIdentity;
 import io.bosonnetwork.crypto.Random;
 import io.bosonnetwork.crypto.Signature;
 import io.bosonnetwork.crypto.pow.RegistrationPowClient;
-import io.bosonnetwork.cwt.Claim;
-import io.bosonnetwork.cwt.SignedCwt;
 import io.bosonnetwork.director.client.exceptions.DirectorException;
 import io.bosonnetwork.director.client.exceptions.NotFoundException;
 import io.bosonnetwork.director.client.exceptions.RegistrationDisabledException;
 import io.bosonnetwork.json.Json;
+import io.bosonnetwork.service.AccessScope;
+import io.bosonnetwork.vertx.ContextualFuture;
 
 /**
  * An asynchronous client for the client API of a Boson Director, the account service of a Boson
@@ -74,21 +74,24 @@ import io.bosonnetwork.json.Json;
  * A client acts as one user, identified in one of two ways:
  * <ul>
  *   <li><b>user key</b> ({@link Builder#userKey(Signature.KeyPair)}) - the client holds the user's
- *       key pair. This is required to register the user, and it is what the client signs in with
- *       whenever it has it.</li>
+ *       key pair. This is required to register the user, and it is what the client authenticates
+ *       with whenever it has it.</li>
  *   <li><b>device</b> ({@link Builder#userId(Id)} with {@link Builder#deviceKey(Signature.KeyPair)})
- *       - the client holds only the key of a device already registered to the user, and signs in as
- *       that device.</li>
+ *       - the client holds only the key of a device already registered to the user, and
+ *       authenticates as that device.</li>
  * </ul>
  * A device key may be configured alongside the user key. It is then the device registered by
  * {@link #registerUser(UserRegistration)} (as the initial device) and by
- * {@link #registerDevice(String, String)}. A client with no identity at all can still make the
- * public calls, {@link #getNodeId()} and {@link #getNodeStatus()}.
+ * {@link #registerDevice(String, String)}. A client configured with neither identity is rejected
+ * when it is built.
  * <p>
- * Signing in is automatic. The first call that needs it signs a fresh nonce, exchanges it for an
- * access token, and caches the token until shortly before it expires. If the Director rejects the
- * token as unauthorized anyway, the client signs in again and repeats that call once: the Director
- * rejects a token before acting on the request, so the repeat is safe. No other failure is retried.
+ * There is no sign-in. The client issues its own short-lived access tokens, signed with the key it
+ * authenticates with and bound to the node id, and renews them shortly before they expire. The node
+ * id is the configured one ({@link Builder#nodeId(Id)}), or else the one the Director reports,
+ * looked up by the first call that needs it. If the Director rejects a token and its clock is far
+ * from the local one, the client dates its tokens by the Director's clock from then on and repeats
+ * that call once: the Director rejects a token before acting on the request, so the repeat is safe.
+ * No other failure is retried.
  *
  * <h2>Passphrase</h2>
  * An account may carry a passphrase as a second factor. Once one is set, the Director requires it
@@ -108,7 +111,7 @@ import io.bosonnetwork.json.Json;
  * the more specific subclasses in {@link io.bosonnetwork.director.client.exceptions}, carrying the
  * HTTP status. A call that never gets an answer fails with a {@code DirectorException} whose status
  * is {@link DirectorException#NO_HTTP_STATUS}. Invalid arguments, and calls the client cannot make
- * in its current state (no identity, no user key to register with, already closed), throw at once
+ * in its current state (no key to register with, already closed), throw at once
  * ({@link NullPointerException}, {@link IllegalArgumentException} or {@link IllegalStateException})
  * rather than failing the returned future.
  *
@@ -142,82 +145,50 @@ public class DirectorClient {
 	// Size of the random nonce signed to obtain an access token.
 	private static final int AUTH_NONCE_SIZE = 32;
 
-	// The access token is renewed this long before it expires, so that no request carries a token
-	// that expires while the request is in flight.
-	private static final long TOKEN_REFRESH_MARGIN = 60 * 1000;
-
-	// Clock skew tolerated when reading an access token's time claims.
-	private static final int TOKEN_CLOCK_SKEW = 5 * 60;
-
 	// Nonces the proof-of-work solver may try before it gives up (see RegistrationPowClient.solve).
 	private static final long MAX_POW_NONCES = 1_000_000L;
 
 	private static final String CONTENT_TYPE_PNG = "image/png";
 	private static final String CONTENT_TYPE_JPEG = "image/jpeg";
 
-	private static final String NO_IDENTITY = "This call needs a user identity: configure the user key, " +
-			"or the user id together with a device key";
-
 	private final Vertx vertx;
-	private final URL directorUrl;
 
-	private final @Nullable Id nodeId;
+	private final URL directorUrl;
+	// The configured node id, or the one the Director reported once looked up.
+	private volatile @Nullable Id nodeId;
+
+	// client credentials
 	private final Signature.@Nullable KeyPair userKey;
-	private final @Nullable Id userId;
+	private final Id userId;
 	private final Signature.@Nullable KeyPair deviceKey;
 	private final @Nullable Id deviceId;
 
 	private final DirectorTransport transport;
-	private final DirectorTransport.TokenSource tokens;
-
-	private final Object tokenLock = new Object();
-	// The cached access token, and the sign-in shared by the calls waiting for one; both guarded by
-	// tokenLock.
-	private @Nullable AccessToken token;
-	private @Nullable Future<String> signIn;
+	private final SelfIssuedTokens tokens;
 
 	private static final Logger log = LoggerFactory.getLogger(DirectorClient.class);
-
-	private static final class AccessToken {
-		private final String value;
-		// Epoch milliseconds; Long.MAX_VALUE when the token's expiry cannot be read.
-		private final long expiresAt;
-
-		private AccessToken(String value, long expiresAt) {
-			this.value = value;
-			this.expiresAt = expiresAt;
-		}
-	}
 
 	private DirectorClient(Builder builder) {
 		this.vertx = Objects.requireNonNull(builder.vertx, "Vert.x instance must be set");
 		this.directorUrl = Objects.requireNonNull(builder.directorUrl, "directorUrl must be set");
 		this.nodeId = builder.nodeId;
+
+		// A client acts as one user: holding the user key, or as one of the user's devices.
+		if (builder.userKey == null && (builder.userId == null || builder.deviceKey == null))
+			throw new IllegalArgumentException("A client acts as a user: set the user key, or the user id together with a device key");
+
 		this.userKey = builder.userKey;
-		this.userId = builder.userId;
+		this.userId = Objects.requireNonNull(builder.userId);
 		this.deviceKey = builder.deviceKey;
 		this.deviceId = deviceKey != null ? Id.of(deviceKey.publicKey().bytes()) : null;
 
-		if (userId == null && deviceKey != null)
-			throw new IllegalArgumentException("A device acts on behalf of a user: set the user key or the user id");
-		if (userId != null && userKey == null && deviceKey == null)
-			throw new IllegalArgumentException("A user identified by id needs a device key to sign in with");
-
 		this.transport = new DirectorTransport(vertx, directorUrl, CLIENT_API, nodeId, log);
-		this.tokens = new DirectorTransport.TokenSource() {
-			@Override
-			public Future<String> token() {
-				return accessToken();
-			}
 
-			@Override
-			public boolean rejected(String token) {
-				// Rejected before it was acted on - the token expired early, or the Director was restarted
-				// with a new key. A new sign-in fixes either.
-				invalidateToken(token);
-				return true;
-			}
-		};
+		// Tokens are signed with the user key when the client has it: that works before any device is
+		// registered. A device signs its own, naming itself as the client.
+		Signature.KeyPair signer = userKey != null ? userKey : Objects.requireNonNull(deviceKey);
+		this.tokens = new SelfIssuedTokens(new CryptoIdentity(signer), userId, userKey != null ? null : deviceId,
+				AccessScope.CLIENT.toString(), this::resolveNodeId, log);
 	}
 
 	/**
@@ -241,9 +212,9 @@ public class DirectorClient {
 	/**
 	 * Returns the id of the user this client acts as.
 	 *
-	 * @return the user id, or {@code null} if the client has no identity
+	 * @return the user id
 	 */
-	public @Nullable Id getUserId() {
+	public Id getUserId() {
 		return userId;
 	}
 
@@ -263,7 +234,7 @@ public class DirectorClient {
 	 * @return a future completing when the client is closed
 	 */
 	public CompletableFuture<Void> close() {
-		return toCaller(transport.close());
+		return ContextualFuture.of(transport.close());
 	}
 
 	/**
@@ -278,30 +249,44 @@ public class DirectorClient {
 	// ---- Node ----------------------------------------------------------------------------------
 
 	/**
-	 * Gets the Boson id of the super node the Director runs on. Needs no identity.
+	 * Gets the Boson id of the super node the Director runs on. Sent without authentication.
 	 *
 	 * @return a future completing with the node id
 	 */
 	public CompletableFuture<Id> getNodeId() {
 		checkOpen();
-		return toCaller(fetchNodeId());
+		return ContextualFuture.of(fetchNodeId());
 	}
 
 	/**
 	 * Gets the status of the super node: what it is, what it runs and which services it offers.
-	 * Needs no identity.
+	 * Sent without authentication.
 	 *
 	 * @return a future completing with the node status
 	 */
 	public CompletableFuture<NodeStatus> getNodeStatus() {
 		checkOpen();
-		return toCaller(call(HttpMethod.GET, "/node", null, false)
+		return ContextualFuture.of(call(HttpMethod.GET, "/node", null, false)
 				.compose(res -> decode(res, json(NodeStatus.class))));
 	}
 
 	private Future<Id> fetchNodeId() {
 		return call(HttpMethod.GET, "/id", null, false)
 				.compose(res -> decode(res, body -> Id.of(stringField(body, "id"))));
+	}
+
+	// The configured node id, or the one the Director reports, looked up once it is needed. Concurrent
+	// first calls each look it up rather than share one lookup, so that each completes on its own
+	// caller's context.
+	private Future<Id> resolveNodeId() {
+		Id id = nodeId;
+		if (id != null)
+			return Future.succeededFuture(id);
+
+		return fetchNodeId().map(fetched -> {
+			this.nodeId = fetched;
+			return fetched;
+		});
 	}
 
 	// ---- Registration --------------------------------------------------------------------------
@@ -344,8 +329,7 @@ public class DirectorClient {
 		}
 		final Signature.KeyPair initialDeviceKey = dk;
 
-		Future<Id> node = nodeId != null ? Future.succeededFuture(nodeId) : fetchNodeId();
-		return toCaller(node.compose(nid -> fetchChallenge().compose(challenge ->
+		return ContextualFuture.of(resolveNodeId().compose(nid -> fetchChallenge().compose(challenge ->
 				solve(nid, uk, challenge).compose(solution ->
 						submitRegistration(registration, nid, uk, initialDeviceKey, challenge, solution)))));
 	}
@@ -391,14 +375,9 @@ public class DirectorClient {
 			path = "/usersAndInitialDevice";
 		}
 
-		// The registration answers with an access token for the new account; keep it, it saves the
-		// first sign-in.
-		return call(HttpMethod.POST, path, body, false)
-				.compose(res -> decode(res, b -> stringField(b, "token")))
-				.map(t -> {
-					cacheToken(t);
-					return null;
-				});
+		// The registration also answers with an access token for the new account, issued by the node;
+		// this client issues its own.
+		return call(HttpMethod.POST, path, body, false).mapEmpty();
 	}
 
 	// ---- Devices -------------------------------------------------------------------------------
@@ -410,7 +389,7 @@ public class DirectorClient {
 	 * @param deviceName a name for the device, shown to the user
 	 * @param appName the name of the app the device runs
 	 * @return a future completing when the device is registered
-	 * @throws IllegalStateException if the client has no device key, or no user identity
+	 * @throws IllegalStateException if the client has no device key
 	 */
 	public CompletableFuture<Void> registerDevice(String deviceName, String appName) {
 		return registerDevice(deviceName, appName, null);
@@ -423,7 +402,7 @@ public class DirectorClient {
 	 * @param appName the name of the app the device runs
 	 * @param passphrase the account passphrase, or {@code null} if the account has none
 	 * @return a future completing when the device is registered
-	 * @throws IllegalStateException if the client has no device key, or no user identity
+	 * @throws IllegalStateException if the client has no device key
 	 */
 	public CompletableFuture<Void> registerDevice(String deviceName, String appName, @Nullable String passphrase) {
 		Signature.KeyPair dk = deviceKey;
@@ -445,7 +424,6 @@ public class DirectorClient {
 	 * @param appName the name of the app the device runs
 	 * @param passphrase the account passphrase, or {@code null} if the account has none
 	 * @return a future completing when the device is registered
-	 * @throws IllegalStateException if the client has no user identity
 	 */
 	public CompletableFuture<Void> registerDevice(Signature.KeyPair key, String deviceName, String appName,
 			@Nullable String passphrase) {
@@ -453,7 +431,6 @@ public class DirectorClient {
 		Objects.requireNonNull(deviceName, "deviceName");
 		Objects.requireNonNull(appName, "appName");
 		checkOpen();
-		checkIdentity();
 
 		byte[] nonce = Random.randomBytes(AUTH_NONCE_SIZE);
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
@@ -464,19 +441,17 @@ public class DirectorClient {
 		body.put("deviceSig", key.privateKey().sign(nonce));
 		putIfNotNull(body, "passphrase", passphrase);
 
-		return toCaller(call(HttpMethod.POST, "/devices", body, true).mapEmpty());
+		return ContextualFuture.of(call(HttpMethod.POST, "/devices", body, true).mapEmpty());
 	}
 
 	/**
 	 * Lists the devices registered to the user.
 	 *
 	 * @return a future completing with the devices
-	 * @throws IllegalStateException if the client has no user identity
 	 */
 	public CompletableFuture<List<Device>> listDevices() {
 		checkOpen();
-		checkIdentity();
-		return toCaller(call(HttpMethod.GET, "/devices", null, true)
+		return ContextualFuture.of(call(HttpMethod.GET, "/devices", null, true)
 				.compose(res -> decode(res, jsonList(Device.class))));
 	}
 
@@ -487,7 +462,6 @@ public class DirectorClient {
 	 * @param deviceId the id of the device to remove
 	 * @return a future completing when the device is removed; it fails with
 	 *         {@link NotFoundException} if the user has no such device
-	 * @throws IllegalStateException if the client has no user identity
 	 */
 	public CompletableFuture<Void> removeDevice(Id deviceId) {
 		return removeDevice(deviceId, null);
@@ -500,18 +474,16 @@ public class DirectorClient {
 	 * @param passphrase the account passphrase, or {@code null} if the account has none
 	 * @return a future completing when the device is removed; it fails with
 	 *         {@link NotFoundException} if the user has no such device
-	 * @throws IllegalStateException if the client has no user identity
 	 */
 	public CompletableFuture<Void> removeDevice(Id deviceId, @Nullable String passphrase) {
 		Objects.requireNonNull(deviceId, "deviceId");
 		checkOpen();
-		checkIdentity();
 
 		// Always send a body, if only an empty one: the Director parses one whenever it is present.
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
 		putIfNotNull(body, "passphrase", passphrase);
 
-		return toCaller(call(HttpMethod.POST, "/devices/" + deviceId.toBase58String() + "/remove", body, true)
+		return ContextualFuture.of(call(HttpMethod.POST, "/devices/" + deviceId.toBase58String() + "/remove", body, true)
 				.mapEmpty());
 	}
 
@@ -527,16 +499,14 @@ public class DirectorClient {
 	 * @param passphrase the new passphrase
 	 * @return a future completing when the passphrase is set
 	 * @throws IllegalArgumentException if the passphrase is empty
-	 * @throws IllegalStateException if the client has no user identity
 	 */
 	public CompletableFuture<Void> setPassphrase(String passphrase) {
 		checkPassphrase(passphrase, "passphrase");
 		checkOpen();
-		checkIdentity();
 
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
 		body.put("passphrase", passphrase);
-		return toCaller(call(HttpMethod.PUT, "/passphrase", body, true).mapEmpty());
+		return ContextualFuture.of(call(HttpMethod.PUT, "/passphrase", body, true).mapEmpty());
 	}
 
 	/**
@@ -548,18 +518,16 @@ public class DirectorClient {
 	 *         {@link io.bosonnetwork.director.client.exceptions.ForbiddenException} if the current
 	 *         passphrase is wrong
 	 * @throws IllegalArgumentException if either passphrase is empty
-	 * @throws IllegalStateException if the client has no user identity
 	 */
 	public CompletableFuture<Void> updatePassphrase(String currentPassphrase, String newPassphrase) {
 		checkPassphrase(currentPassphrase, "currentPassphrase");
 		checkPassphrase(newPassphrase, "newPassphrase");
 		checkOpen();
-		checkIdentity();
 
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
 		body.put("passphrase", newPassphrase);
 		body.put("currentPassphrase", currentPassphrase);
-		return toCaller(call(HttpMethod.PUT, "/passphrase", body, true).mapEmpty());
+		return ContextualFuture.of(call(HttpMethod.PUT, "/passphrase", body, true).mapEmpty());
 	}
 
 	/**
@@ -570,16 +538,14 @@ public class DirectorClient {
 	 *         {@link io.bosonnetwork.director.client.exceptions.ForbiddenException} if the passphrase
 	 *         is wrong
 	 * @throws IllegalArgumentException if the passphrase is empty
-	 * @throws IllegalStateException if the client has no user identity
 	 */
 	public CompletableFuture<Void> clearPassphrase(String currentPassphrase) {
 		checkPassphrase(currentPassphrase, "currentPassphrase");
 		checkOpen();
-		checkIdentity();
 
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
 		body.put("passphrase", currentPassphrase);
-		return toCaller(call(HttpMethod.POST, "/passphrase/clear", body, true).mapEmpty());
+		return ContextualFuture.of(call(HttpMethod.POST, "/passphrase/clear", body, true).mapEmpty());
 	}
 
 	// ---- Profile -------------------------------------------------------------------------------
@@ -588,12 +554,10 @@ public class DirectorClient {
 	 * Gets the user's profile.
 	 *
 	 * @return a future completing with the profile
-	 * @throws IllegalStateException if the client has no user identity
 	 */
 	public CompletableFuture<Profile> getProfile() {
 		checkOpen();
-		checkIdentity();
-		return toCaller(fetchProfile());
+		return ContextualFuture.of(fetchProfile());
 	}
 
 	/**
@@ -603,7 +567,6 @@ public class DirectorClient {
 	 * @param update the fields to change
 	 * @return a future completing when the profile is updated
 	 * @throws IllegalArgumentException if the update changes nothing
-	 * @throws IllegalStateException if the client has no user identity
 	 */
 	public CompletableFuture<Void> updateProfile(ProfileUpdate update) {
 		return updateProfile(update, null);
@@ -616,18 +579,16 @@ public class DirectorClient {
 	 * @param passphrase the account passphrase, or {@code null} if the account has none
 	 * @return a future completing when the profile is updated
 	 * @throws IllegalArgumentException if the update changes nothing
-	 * @throws IllegalStateException if the client has no user identity
 	 */
 	public CompletableFuture<Void> updateProfile(ProfileUpdate update, @Nullable String passphrase) {
 		Objects.requireNonNull(update, "update");
 		if (update.isEmpty())
 			throw new IllegalArgumentException("The profile update changes nothing");
 		checkOpen();
-		checkIdentity();
 
 		Map<String, @Nullable Object> body = new LinkedHashMap<>(update.fields());
 		putIfNotNull(body, "passphrase", passphrase);
-		return toCaller(call(HttpMethod.PUT, "/profile", body, true).mapEmpty());
+		return ContextualFuture.of(call(HttpMethod.PUT, "/profile", body, true).mapEmpty());
 	}
 
 	private Future<Profile> fetchProfile() {
@@ -645,7 +606,6 @@ public class DirectorClient {
 	 * @param contentType the image type, {@code image/png} or {@code image/jpeg}
 	 * @return a future completing with the avatar URI now in the user's profile
 	 * @throws IllegalArgumentException if the image is empty or the type is not PNG or JPEG
-	 * @throws IllegalStateException if the client has no user identity
 	 */
 	public CompletableFuture<String> updateAvatar(byte[] image, String contentType) {
 		Objects.requireNonNull(image, "image");
@@ -654,9 +614,8 @@ public class DirectorClient {
 			throw new IllegalArgumentException("The avatar image is empty");
 		String type = avatarType(contentType);
 		checkOpen();
-		checkIdentity();
 
-		return toCaller(uploadAvatar(Buffer.buffer(image), type));
+		return ContextualFuture.of(uploadAvatar(Buffer.buffer(image), type));
 	}
 
 	/**
@@ -667,15 +626,13 @@ public class DirectorClient {
 	 * @return a future completing with the avatar URI now in the user's profile; it fails with the
 	 *         file system's error if the file cannot be read
 	 * @throws IllegalArgumentException if the file extension is not one of the above
-	 * @throws IllegalStateException if the client has no user identity
 	 */
 	public CompletableFuture<String> updateAvatar(Path file) {
 		Objects.requireNonNull(file, "file");
 		String type = avatarTypeOf(file);
 		checkOpen();
-		checkIdentity();
 
-		return toCaller(vertx.fileSystem().readFile(file.toString())
+		return ContextualFuture.of(vertx.fileSystem().readFile(file.toString())
 				.compose(image -> uploadAvatar(image, type)));
 	}
 
@@ -683,11 +640,9 @@ public class DirectorClient {
 	 * Downloads the user's current avatar.
 	 *
 	 * @return a future completing with the avatar, or with {@code null} if the user has none
-	 * @throws IllegalStateException if the client has no user identity
 	 */
 	public CompletableFuture<@Nullable Avatar> getAvatar() {
 		checkOpen();
-		checkIdentity();
 
 		Future<@Nullable Avatar> avatar = call(HttpMethod.GET, "/avatar", null, true)
 				.<@Nullable Avatar>map(res -> {
@@ -696,7 +651,7 @@ public class DirectorClient {
 				})
 				.recover(e -> e instanceof NotFoundException ? 
 						Future.<@Nullable Avatar>succeededFuture(null) : Future.<@Nullable Avatar>failedFuture(e));
-		return toCaller(avatar);
+		return ContextualFuture.of(avatar);
 	}
 
 	private Future<String> uploadAvatar(Buffer image, String contentType) {
@@ -737,11 +692,9 @@ public class DirectorClient {
 	 * free plan.
 	 *
 	 * @return a future completing with the user's plan
-	 * @throws IllegalStateException if the client has no user identity
 	 */
 	public CompletableFuture<UserPlan> getPlan() {
 		checkOpen();
-		checkIdentity();
 
 		// The profile names the plan the Director applies to the user - the plan of the active
 		// subscription, or the free plan without one - so it is the authority on the name. The catalog
@@ -755,7 +708,7 @@ public class DirectorClient {
 		Future<List<Plan>> plans = call(HttpMethod.GET, "/plans", null, false)
 				.compose(res -> decode(res, jsonList(Plan.class)));
 
-		return toCaller(Future.all(profile, subscription, plans).map(v -> {
+		return ContextualFuture.of(Future.all(profile, subscription, plans).map(v -> {
 			String name = profile.result().getPlanName();
 			Subscription s = subscription.result();
 			Plan plan = null;
@@ -770,101 +723,13 @@ public class DirectorClient {
 		}));
 	}
 
-	// ---- Authentication ------------------------------------------------------------------------
-
-	// Returns a current access token: the cached one, or one from a sign-in shared by all the calls
-	// that need a token while it runs.
-	private Future<String> accessToken() {
-		synchronized (tokenLock) {
-			AccessToken current = token;
-			if (current != null && System.currentTimeMillis() < current.expiresAt - TOKEN_REFRESH_MARGIN)
-				return Future.succeededFuture(current.value);
-
-			Future<String> pending = signIn;
-			if (pending == null) {
-				Future<String> started = signIn();
-				signIn = started;
-				// Completes synchronously when the sign-in fails before it is sent; the lock is reentrant.
-				started.onComplete(ar -> {
-					synchronized (tokenLock) {
-						if (signIn == started)
-							signIn = null;
-					}
-				});
-				pending = started;
-			}
-
-			return pending;
-		}
-	}
-
-	private Future<String> signIn() {
-		Id uid = userId;
-		if (uid == null)
-			return Future.failedFuture(new IllegalStateException(NO_IDENTITY));
-
-		byte[] nonce = Random.randomBytes(AUTH_NONCE_SIZE);
-		Map<String, @Nullable Object> body = new LinkedHashMap<>();
-		body.put("userId", uid);
-		body.put("nonce", nonce);
-
-		// Sign in as the user when the key is at hand: that works before any device is registered.
-		Signature.KeyPair uk = userKey;
-		Signature.KeyPair dk = deviceKey;
-		if (uk != null) {
-			body.put("userSig", uk.privateKey().sign(nonce));
-		} else if (dk != null) {
-			body.put("deviceId", deviceId);
-			body.put("deviceSig", dk.privateKey().sign(nonce));
-		} else {
-			return Future.failedFuture(new IllegalStateException(NO_IDENTITY));
-		}
-
-		return call(HttpMethod.POST, "/auth", body, false)
-				.compose(res -> decode(res, b -> stringField(b, "token")))
-				.map(t -> {
-					cacheToken(t);
-					return t;
-				});
-	}
-
-	private void cacheToken(String value) {
-		AccessToken t = new AccessToken(value, expirationOf(value));
-		synchronized (tokenLock) {
-			token = t;
-		}
-	}
-
-	private void invalidateToken(String value) {
-		synchronized (tokenLock) {
-			AccessToken current = token;
-			if (current != null && current.value.equals(value))
-				token = null;
-		}
-	}
-
-	// Reads the expiry of an access token, so it can be renewed before it lapses. A token whose expiry
-	// cannot be read is used until the Director rejects it.
-	private static long expirationOf(String token) {
-		try {
-			SignedCwt cwt = SignedCwt.parse(token, TOKEN_CLOCK_SKEW);
-			Object exp = cwt.getClaims().get(Claim.EXPIRATION.getValue());
-			if (exp instanceof Number seconds)
-				return seconds.longValue() * 1000;
-		} catch (Exception e) {
-			log.debug("Cannot read the access token expiry, relying on the Director to reject it: {}", e.getMessage());
-		}
-
-		return Long.MAX_VALUE;
-	}
-
 	// ---- HTTP ----------------------------------------------------------------------------------
 
 	// Sends a request with an optional JSON body to the client API. Every API call goes through here or
 	// the overload below, so adding one to this client is a method that names its path and decodes its
 	// answer.
 	private Future<DirectorTransport.Response> call(HttpMethod method, String path,
-			@Nullable Map<String, @Nullable Object> json, boolean authenticated) {
+			@Nullable Map<String, ?> json, boolean authenticated) {
 		return transport.call(method, path, json, authenticated ? tokens : null);
 	}
 
@@ -913,11 +778,6 @@ public class DirectorClient {
 		transport.checkOpen();
 	}
 
-	private void checkIdentity() {
-		if (userId == null)
-			throw new IllegalStateException(NO_IDENTITY);
-	}
-
 	private static void checkPassphrase(String passphrase, String name) {
 		Objects.requireNonNull(passphrase, name);
 		if (passphrase.isEmpty())
@@ -927,9 +787,8 @@ public class DirectorClient {
 	/**
 	 * Fluent builder for {@link DirectorClient}.
 	 * <p>
-	 * The Director URL is required. The identity is optional, but without one only the public calls
-	 * can be made; configure either the user key, or the user id together with a device key. Not
-	 * thread-safe.
+	 * The Director URL and an identity are required: the user key, optionally with a device key, or
+	 * the user id together with a device key. Not thread-safe.
 	 */
 	@NullUnmarked
 	public static class Builder {
@@ -991,9 +850,11 @@ public class DirectorClient {
 		}
 
 		/**
-		 * Sets the Boson id of the super node the Director runs on (optional). Over HTTPS, a
-		 * self-signed Director certificate is then accepted when it is pinned to this id, and
-		 * registration skips looking the id up.
+		 * Sets the Boson id of the super node the Director runs on (optional). Access tokens are bound
+		 * to this id, and over HTTPS a self-signed Director certificate pinned to it is accepted as
+		 * well. Without it, the client binds its tokens to the id the Director reports. Configure it
+		 * when the id is known: a Director that reported another node's id could otherwise obtain
+		 * tokens valid on that node.
 		 *
 		 * @param nodeId the super node id
 		 * @return this builder
@@ -1042,7 +903,7 @@ public class DirectorClient {
 		}
 
 		/**
-		 * Sets the user id, for a client that signs in with a device key rather than the user key.
+		 * Sets the user id, for a client that authenticates with a device key rather than the user key.
 		 * Replaces a user key set with {@link #userKey(Signature.KeyPair)}.
 		 *
 		 * @param userId the user id
@@ -1093,8 +954,8 @@ public class DirectorClient {
 		 * Validates the configuration and builds the client.
 		 *
 		 * @return the client, ready to use
-		 * @throws IllegalStateException if Vert.x or the Director URL is missing, or the identity is
-		 *         incomplete (a device key without a user, or a user id without a device key)
+		 * @throws IllegalStateException if Vert.x, the Director URL or the identity is missing, or the
+		 *         identity is incomplete (a device key without a user, or a user id without a device key)
 		 */
 		public DirectorClient build() {
 			try {

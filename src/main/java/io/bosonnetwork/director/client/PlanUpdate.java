@@ -134,7 +134,7 @@ public class PlanUpdate {
 	}
 
 	// The fields to send, keyed by their wire names.
-	Map<String, @Nullable Object> fields() {
+	Map<String, ?> fields() {
 		return Collections.unmodifiableMap(fields);
 	}
 }

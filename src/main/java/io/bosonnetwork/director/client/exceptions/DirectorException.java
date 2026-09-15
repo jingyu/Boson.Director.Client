@@ -45,6 +45,9 @@ public class DirectorException extends BosonException {
 	// Error bodies are quoted in the message up to this length; a proxy's error page can be long.
 	private static final int MAX_MESSAGE_LENGTH = 512;
 
+	/**
+	 * HTTP status of the Director's answer
+	 */
 	private final int status;
 
 	/**

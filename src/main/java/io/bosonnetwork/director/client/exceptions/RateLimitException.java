@@ -36,6 +36,9 @@ public class RateLimitException extends DirectorException {
 	 */
 	public static final int STATUS = 429;
 
+	/**
+	 * How long to wait before retrying.
+	 */
 	private final long retryAfter;
 
 	/**

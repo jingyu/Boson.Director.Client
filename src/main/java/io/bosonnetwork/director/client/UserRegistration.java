@@ -30,7 +30,7 @@ import org.jspecify.annotations.Nullable;
  * The account details to register a user with, for {@link DirectorClient#registerUser(UserRegistration)}.
  * <p>
  * Every field is optional. An initial device registers the client's device key in the same
- * request, so the user can sign in as that device from the start. For example:
+ * request, so the client can authenticate as that device from the start. For example:
  * <pre>{@code
  * director.registerUser(new UserRegistration()
  *         .name("Alice")

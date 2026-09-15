@@ -85,11 +85,24 @@ public class DirectorAdminTests {
 	}
 
 	@Test
+	void nodeIdIsOptional() throws Exception {
+		DirectorAdmin admin = DirectorAdmin.builder().vertx(vertx).directorUrl(UNREACHABLE_URL).userKey(adminKey).build();
+		try {
+			// The call looks the node id up first, and the lookup fails like any other request.
+			ExecutionException e = assertThrows(ExecutionException.class,
+					() -> admin.getNodeStatus().get(30, TimeUnit.SECONDS));
+			DirectorException error = assertInstanceOf(DirectorException.class, e.getCause());
+			assertEquals(DirectorException.NO_HTTP_STATUS, error.getStatus());
+		} finally {
+			admin.close().get(10, TimeUnit.SECONDS);
+		}
+	}
+
+	@Test
 	void reportsItsIdentity() throws Exception {
 		DirectorAdmin admin = builder().build();
 		try {
 			assertEquals(Id.of(adminKey.publicKey().bytes()), admin.getUserId());
-			assertEquals(nodeId, admin.getNodeId());
 			assertEquals(UNREACHABLE_URL, admin.getDirectorUrl().toString());
 		} finally {
 			admin.close().get(10, TimeUnit.SECONDS);
@@ -107,8 +120,6 @@ public class DirectorAdminTests {
 
 	@Test
 	void incompleteConfigurationIsRejected() {
-		assertThrows(IllegalStateException.class,
-				() -> DirectorAdmin.builder().vertx(vertx).directorUrl(UNREACHABLE_URL).userKey(adminKey).build());
 		assertThrows(IllegalStateException.class,
 				() -> DirectorAdmin.builder().vertx(vertx).directorUrl(UNREACHABLE_URL).nodeId(nodeId).build());
 		assertThrows(IllegalStateException.class,

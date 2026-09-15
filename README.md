@@ -71,12 +71,15 @@ director.registerUser(new UserRegistration()
         .whenComplete((v, e) -> director.close());
 ```
 
-A client acts as one user. Configure the **user key** to register the user and to sign in as the
-user, or the **user id with a device key** to sign in as a device already registered to the user.
-A client with no identity can still call `getNodeId` and `getNodeStatus`.
+A client acts as one user. Configure the **user key** to register the user and to authenticate as
+the user, or the **user id with a device key** to authenticate as a device already registered to the
+user.
+A client configured with neither is rejected when it is built.
 
-Signing in is automatic: the client signs a nonce, exchanges it for an access token, caches the
-token until shortly before it expires, and renews it as needed.
+There is no sign-in: the client issues its own short-lived access tokens, signed with its key and
+bound to the node id - the one configured with `nodeId(...)`, or else the one the Director reports.
+Configure the node id when you know it. A client whose clock is far off learns the Director's clock
+from the first token the Director rejects, and dates its tokens by it from then on.
 
 ### Passphrase
 
@@ -109,8 +112,9 @@ exceptions - with these differences:
 
 - It acts as an administrator: the node's root user, or a user marked as an administrator. Any other
   key is refused with `UnauthorizedException`.
-- It needs the node id as well as the key. There is no sign-in: the client issues its own short-lived
-  token, signed with the key and bound to the node id, so the token is only valid on that node.
+- Its tokens carry the admin role, so the node id matters more: configure it whenever you know it.
+  Without it the client binds its tokens to the id the Director reports, and a Director that
+  reported another node's id could obtain admin tokens valid on that node.
 - A lookup completes with an empty `Optional` when there is nothing to find; changing or removing
   something that does not exist fails with `NotFoundException`.
 - A list call returns everything, or one page with the totals (`PaginatedResult`). Where the Director
@@ -140,8 +144,8 @@ worth handling: `InvalidRequestException` (400), `UnauthorizedException` (401),
 does not federate) and `DirectorServerException` (other 5xx). A call that gets no answer
 fails with status `DirectorException.NO_HTTP_STATUS`.
 
-Only a request rejected as unauthorized is repeated, once, after signing in again. Nothing else is
-retried automatically.
+Only a request rejected as unauthorized while the client's clock was far off is repeated, once,
+with a token dated by the Director's clock. Nothing else is retried automatically.
 
 ## Adding a Director API
 

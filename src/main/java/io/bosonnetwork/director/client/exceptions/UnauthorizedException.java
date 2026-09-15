@@ -24,7 +24,7 @@ package io.bosonnetwork.director.client.exceptions;
 
 /**
  * The Director did not accept the client's identity (HTTP 401): the user, or the device the client
- * signs in as, is not registered on this node.
+ * authenticates as, is not registered on this node.
  */
 public class UnauthorizedException extends DirectorException {
 	private static final long serialVersionUID = 7331942860115216480L;

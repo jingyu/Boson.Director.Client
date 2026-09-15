@@ -30,12 +30,11 @@ import static io.bosonnetwork.director.client.DirectorTransport.jsonList;
 import static io.bosonnetwork.director.client.DirectorTransport.optional;
 import static io.bosonnetwork.director.client.DirectorTransport.paged;
 import static io.bosonnetwork.director.client.DirectorTransport.putIfNotNull;
-import static io.bosonnetwork.director.client.DirectorTransport.toCaller;
+import static io.bosonnetwork.director.client.DirectorTransport.stringField;
 
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,7 +44,6 @@ import java.util.concurrent.CompletableFuture;
 
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
-import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpMethod;
 import org.jspecify.annotations.NullUnmarked;
 import org.jspecify.annotations.Nullable;
@@ -55,11 +53,11 @@ import org.slf4j.LoggerFactory;
 import io.bosonnetwork.Id;
 import io.bosonnetwork.crypto.CryptoIdentity;
 import io.bosonnetwork.crypto.Signature;
-import io.bosonnetwork.cwt.SignedCwt;
 import io.bosonnetwork.director.client.exceptions.DirectorException;
 import io.bosonnetwork.director.client.exceptions.NotFoundException;
 import io.bosonnetwork.json.Json;
 import io.bosonnetwork.service.AccessScope;
+import io.bosonnetwork.vertx.ContextualFuture;
 import io.bosonnetwork.web.PaginatedResult;
 
 /**
@@ -78,8 +76,13 @@ import io.bosonnetwork.web.PaginatedResult;
  * {@link io.bosonnetwork.director.client.exceptions.UnauthorizedException}.
  * <p>
  * There is no sign-in. The client issues its own short-lived access token, signed with the user key
- * and bound to the node id ({@link Builder#nodeId}), which is why both are required: the token is
- * valid for this node's admin API only. It is renewed shortly before it expires.
+ * and bound to the node id, so that the token is valid for this node's admin API only; it is renewed
+ * shortly before it expires. The node id is the configured one ({@link Builder#nodeId}), or else the
+ * one the Director reports, looked up without authentication by the first call that needs it.
+ * Configure it whenever it is known: a Director that reported another node's id could otherwise
+ * obtain admin tokens valid on that node. If the Director rejects a token and its clock is far from
+ * the local one, the client dates its tokens by the Director's clock from then on, and repeats that
+ * call once.
  *
  * <h2>Lookups and lists</h2>
  * Looking up something that does not exist completes with an empty {@link Optional}; changing or
@@ -90,8 +93,8 @@ import io.bosonnetwork.web.PaginatedResult;
  *
  * <h2>Transport security</h2>
  * Use an {@code https} Director URL for any Director that is not on the local machine. A certificate
- * from a public CA is validated as usual, and a self-signed certificate pinned to the node id is
- * accepted as well.
+ * from a public CA is validated as usual. If the node id is configured, a self-signed certificate
+ * pinned to it is accepted as well.
  *
  * <h2>Errors</h2>
  * A call that reaches the Director and is refused fails with a {@link DirectorException}, or one of
@@ -129,49 +132,27 @@ public class DirectorAdmin {
 	// Every admin API lives under this path of the Director API.
 	private static final String ADMIN_API = "/admin";
 
-	// Lifetime of the self-issued access token. Kept short: it is a bearer credential for the whole
-	// admin API, and issuing a new one costs a signature rather than a round trip.
-	private static final Duration TOKEN_LIFETIME = Duration.ofMinutes(10);
-
-	// The access token is renewed this long before it expires, so that no request carries a token
-	// that expires while the request is in flight.
-	private static final long TOKEN_REFRESH_MARGIN = 60 * 1000;
-
 	private final URL directorUrl;
-	private final Id nodeId;
+	// The configured node id, or the one the Director reported once looked up.
+	private volatile @Nullable Id nodeId;
 	private final CryptoIdentity identity;
 
 	private final DirectorTransport transport;
-	private final DirectorTransport.TokenSource tokens;
-
-	private final Object tokenLock = new Object();
-	// The cached access token, and when it expires in epoch milliseconds; both guarded by tokenLock.
-	private @Nullable String token;
-	private long tokenExpiresAt;
+	private final SelfIssuedTokens tokens;
 
 	private static final Logger log = LoggerFactory.getLogger(DirectorAdmin.class);
 
 	private DirectorAdmin(Builder builder) {
 		Vertx vertx = Objects.requireNonNull(builder.vertx, "Vert.x instance must be set");
 		this.directorUrl = Objects.requireNonNull(builder.directorUrl, "directorUrl must be set");
-		this.nodeId = Objects.requireNonNull(builder.nodeId, "nodeId must be set");
+		this.nodeId = builder.nodeId;
 		this.identity = new CryptoIdentity(Objects.requireNonNull(builder.userKey, "userKey must be set"));
 
 		this.transport = new DirectorTransport(vertx, directorUrl, ADMIN_API, nodeId, log);
-		this.tokens = new DirectorTransport.TokenSource() {
-			@Override
-			public Future<String> token() {
-				return Future.succeededFuture(accessToken());
-			}
-
-			@Override
-			public boolean rejected(String value) {
-				// The token is issued here, so a new one would be refused for the same reason this one
-				// was: the key is not an administrator of this node. Drop it, and do not repeat the call.
-				invalidateToken(value);
-				return false;
-			}
-		};
+		// Issued by the administrator for itself: the Director accepts a token whose issuer is its
+		// subject, and grants the admin role from the user record, not from the scope claim.
+		this.tokens = new SelfIssuedTokens(identity, identity.getId(), null, AccessScope.ADMIN.toString(),
+				this::resolveNodeId, log);
 	}
 
 	/**
@@ -193,15 +174,6 @@ public class DirectorAdmin {
 	}
 
 	/**
-	 * Returns the Boson id of the super node this client administers.
-	 *
-	 * @return the node id
-	 */
-	public Id getNodeId() {
-		return nodeId;
-	}
-
-	/**
 	 * Returns the id of the administrator this client acts as.
 	 *
 	 * @return the user id
@@ -217,7 +189,7 @@ public class DirectorAdmin {
 	 * @return a future completing when the client is closed
 	 */
 	public CompletableFuture<Void> close() {
-		return toCaller(transport.close());
+		return ContextualFuture.of(transport.close());
 	}
 
 	/**
@@ -232,12 +204,43 @@ public class DirectorAdmin {
 	// ---- Node ----------------------------------------------------------------------------------
 
 	/**
+	 * Gets the Boson id of the super node the Director runs on, as the Director reports it. Sent
+	 * without authentication, so it succeeds whatever the key.
+	 *
+	 * @return a future completing with the node id
+	 */
+	public CompletableFuture<Id> getNodeId() {
+		transport.checkOpen();
+		return ContextualFuture.of(fetchNodeId());
+	}
+
+	/**
 	 * Gets the status of the super node: what it is, what it runs and which services it offers.
 	 *
 	 * @return a future completing with the node status
 	 */
 	public CompletableFuture<NodeStatus> getNodeStatus() {
 		return fetch(new Query("/node"), NodeStatus.class);
+	}
+
+	// The configured node id, or the one the Director reports, looked up once it is needed. Concurrent
+	// first calls each look it up rather than share one lookup, so that each completes on its own
+	// caller's context.
+	private Future<Id> resolveNodeId() {
+		Id id = nodeId;
+		if (id != null)
+			return Future.succeededFuture(id);
+
+		return fetchNodeId().map(fetched -> {
+			this.nodeId = fetched;
+			return fetched;
+		});
+	}
+
+	// Unauthenticated: the access token is bound to the node id, so the lookup cannot carry one.
+	private Future<Id> fetchNodeId() {
+		return transport.call(HttpMethod.GET, "/id", null, null)
+				.compose(res -> decode(res, body -> Id.of(stringField(body, "id"))));
 	}
 
 	// ---- Users ---------------------------------------------------------------------------------
@@ -1031,7 +1034,7 @@ public class DirectorAdmin {
 		transport.checkOpen();
 
 		// The Director answers with the federated node, or with a JSON null when there is none.
-		return toCaller(call(HttpMethod.POST, "/federation/proposals", body).compose(res -> decode(res, b -> {
+		return ContextualFuture.of(call(HttpMethod.POST, "/federation/proposals", body).compose(res -> decode(res, b -> {
 			if (b.toString(StandardCharsets.UTF_8).trim().equals("null"))
 				return Optional.<FederatedNode>empty();
 
@@ -1116,61 +1119,27 @@ public class DirectorAdmin {
 		return query;
 	}
 
-	// ---- Authentication ------------------------------------------------------------------------
-
-	// Returns a current access token: the cached one, or a new one issued with the user key.
-	private String accessToken() {
-		synchronized (tokenLock) {
-			long now = System.currentTimeMillis();
-			String current = token;
-			if (current != null && now < tokenExpiresAt - TOKEN_REFRESH_MARGIN)
-				return current;
-
-			// Issued by the administrator for itself: the Director accepts a token whose issuer is its
-			// subject, and grants the admin role from the user record, not from the scope claim.
-			current = SignedCwt.builder(identity)
-					.subject(identity.getId())
-					.audience(nodeId)
-					.expiration(TOKEN_LIFETIME)
-					.notBeforeNow()
-					.issuedAtNow()
-					.scope(AccessScope.ADMIN.toString())
-					.buildToString();
-
-			token = current;
-			tokenExpiresAt = now + TOKEN_LIFETIME.toMillis();
-			return current;
-		}
-	}
-
-	private void invalidateToken(String value) {
-		synchronized (tokenLock) {
-			if (value.equals(token))
-				token = null;
-		}
-	}
-
 	// ---- Requests ------------------------------------------------------------------------------
 
 	// Sends an authenticated request to the admin API. Every call goes through here, so adding one to
 	// this client is a method that names its path and decodes its answer.
 	private Future<DirectorTransport.Response> call(HttpMethod method, String path,
-			@Nullable Map<String, @Nullable Object> body) {
+			@Nullable Map<String, ?> body) {
 		return transport.call(method, path, body, tokens);
 	}
 
 	// A request answered with no content.
 	private CompletableFuture<Void> execute(HttpMethod method, String path,
-			@Nullable Map<String, @Nullable Object> body) {
+			@Nullable Map<String, ?> body) {
 		transport.checkOpen();
-		return toCaller(call(method, path, body).<Void>mapEmpty());
+		return ContextualFuture.of(call(method, path, body).<Void>mapEmpty());
 	}
 
 	// A request answered with one object.
 	private <T> CompletableFuture<T> submit(HttpMethod method, String path,
-			@Nullable Map<String, @Nullable Object> body, Class<T> type) {
+			@Nullable Map<String, ?> body, Class<T> type) {
 		transport.checkOpen();
-		return toCaller(call(method, path, body).compose(res -> decode(res, json(type))));
+		return ContextualFuture.of(call(method, path, body).compose(res -> decode(res, json(type))));
 	}
 
 	private <T> CompletableFuture<T> fetch(Query query, Class<T> type) {
@@ -1179,19 +1148,19 @@ public class DirectorAdmin {
 
 	private <T> CompletableFuture<Optional<T>> find(Query query, Class<T> type) {
 		transport.checkOpen();
-		return toCaller(optional(call(HttpMethod.GET, query.toString(), null)
+		return ContextualFuture.of(optional(call(HttpMethod.GET, query.toString(), null)
 				.compose(res -> decode(res, json(type)))));
 	}
 
 	private <T> CompletableFuture<List<T>> fetchList(Query query, Class<T> type) {
 		transport.checkOpen();
-		return toCaller(call(HttpMethod.GET, query.toString(), null)
+		return ContextualFuture.of(call(HttpMethod.GET, query.toString(), null)
 				.compose(res -> decode(res, jsonList(type))));
 	}
 
 	private <T> CompletableFuture<PaginatedResult<T>> fetchPage(Query query, Class<T> type) {
 		transport.checkOpen();
-		return toCaller(call(HttpMethod.GET, query.toString(), null)
+		return ContextualFuture.of(call(HttpMethod.GET, query.toString(), null)
 				.compose(res -> decode(res, paged(type))));
 	}
 
@@ -1321,8 +1290,8 @@ public class DirectorAdmin {
 	/**
 	 * Fluent builder for {@link DirectorAdmin}.
 	 * <p>
-	 * The Director URL, the node id and the administrator's user key are all required. Not
-	 * thread-safe.
+	 * The Director URL and the administrator's user key are required. The node id is optional, but
+	 * should be configured whenever it is known. Not thread-safe.
 	 */
 	@NullUnmarked
 	public static class Builder {
@@ -1382,8 +1351,10 @@ public class DirectorAdmin {
 		}
 
 		/**
-		 * Sets the Boson id of the super node the Director runs on (required). The access tokens are
-		 * bound to it, and over HTTPS a self-signed Director certificate pinned to it is accepted.
+		 * Sets the Boson id of the super node the Director runs on (optional, recommended). Access
+		 * tokens are bound to this id, and over HTTPS a self-signed Director certificate pinned to it is
+		 * accepted as well. Without it, the client binds its tokens to the id the Director reports: a
+		 * Director that reported another node's id could then obtain admin tokens valid on that node.
 		 *
 		 * @param nodeId the super node id
 		 * @return this builder
@@ -1432,8 +1403,7 @@ public class DirectorAdmin {
 		 * Validates the configuration and builds the client.
 		 *
 		 * @return the client, ready to use
-		 * @throws IllegalStateException if Vert.x, the Director URL, the node id or the user key is
-		 *         missing
+		 * @throws IllegalStateException if Vert.x, the Director URL or the user key is missing
 		 */
 		public DirectorAdmin build() {
 			try {

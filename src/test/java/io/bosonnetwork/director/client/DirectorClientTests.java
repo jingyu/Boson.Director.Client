@@ -73,7 +73,7 @@ public class DirectorClientTests {
 
 	@Test
 	void unreachableDirectorFailsWithoutStatus() throws Exception {
-		DirectorClient client = builder().build();
+		DirectorClient client = builder().userKey(userKey).build();
 		try {
 			ExecutionException e = assertThrows(ExecutionException.class,
 					() -> client.getNodeId().get(30, TimeUnit.SECONDS));
@@ -91,10 +91,10 @@ public class DirectorClientTests {
 		assertEquals(Id.of(deviceKey.publicKey().bytes()), client.getDeviceId());
 		client.close().get(10, TimeUnit.SECONDS);
 
-		DirectorClient anonymous = builder().build();
-		assertNull(anonymous.getUserId());
-		assertNull(anonymous.getDeviceId());
-		anonymous.close().get(10, TimeUnit.SECONDS);
+		DirectorClient user = builder().userKey(userKey).build();
+		assertEquals(Id.of(userKey.publicKey().bytes()), user.getUserId());
+		assertNull(user.getDeviceId());
+		user.close().get(10, TimeUnit.SECONDS);
 	}
 
 	@Test
@@ -108,7 +108,11 @@ public class DirectorClientTests {
 
 	@Test
 	void incompleteConfigurationIsRejected() {
+		// An identity is required: the user key, or the user id with a device key.
+		assertThrows(IllegalStateException.class, () -> builder().build());
 		assertThrows(IllegalStateException.class, () -> builder().deviceKey(deviceKey).build());
+		// Setting the user id drops the user key.
+		assertThrows(IllegalStateException.class, () -> builder().userKey(userKey).userId(Id.random()).build());
 		assertThrows(IllegalStateException.class, () -> builder().userId(Id.random()).build());
 		assertThrows(IllegalStateException.class, () -> DirectorClient.builder().vertx(vertx).build());
 		assertThrows(IllegalArgumentException.class, () -> builder().directorUrl("ftp://node.example.com"));
@@ -116,21 +120,8 @@ public class DirectorClientTests {
 	}
 
 	@Test
-	void callsThatNeedAnIdentityThrowWithoutOne() throws Exception {
-		DirectorClient anonymous = builder().build();
-		try {
-			assertThrows(IllegalStateException.class, anonymous::getProfile);
-			assertThrows(IllegalStateException.class, anonymous::listDevices);
-			assertThrows(IllegalStateException.class, anonymous::getPlan);
-			assertThrows(IllegalStateException.class, () -> anonymous.registerUser(new UserRegistration()));
-		} finally {
-			anonymous.close().get(10, TimeUnit.SECONDS);
-		}
-	}
-
-	@Test
 	void registrationNeedsTheKeysItSignsWith() throws Exception {
-		// Signed in as a device: there is no user key to prove the registration with.
+		// Authenticated as a device: there is no user key to prove the registration with.
 		DirectorClient device = builder().userId(Id.of(userKey.publicKey().bytes())).deviceKey(deviceKey).build();
 		// The user key alone: there is no device key to register as the initial device, or as a device.
 		DirectorClient user = builder().userKey(userKey).build();
