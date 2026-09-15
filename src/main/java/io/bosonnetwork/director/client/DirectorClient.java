@@ -22,12 +22,9 @@
 
 package io.bosonnetwork.director.client;
 
-import static io.bosonnetwork.director.client.DirectorTransport.decode;
 import static io.bosonnetwork.director.client.DirectorTransport.decodeKey;
-import static io.bosonnetwork.director.client.DirectorTransport.json;
-import static io.bosonnetwork.director.client.DirectorTransport.jsonList;
 import static io.bosonnetwork.director.client.DirectorTransport.putIfNotNull;
-import static io.bosonnetwork.director.client.DirectorTransport.stringField;
+import static io.bosonnetwork.director.client.DirectorTransport.requiredString;
 
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -267,12 +264,12 @@ public class DirectorClient {
 	public CompletableFuture<NodeStatus> getNodeStatus() {
 		checkOpen();
 		return ContextualFuture.of(call(HttpMethod.GET, "/node", null, false)
-				.compose(res -> decode(res, json(NodeStatus.class))));
+				.compose(res -> res.json(NodeStatus.class)));
 	}
 
 	private Future<Id> fetchNodeId() {
 		return call(HttpMethod.GET, "/id", null, false)
-				.compose(res -> decode(res, body -> Id.of(stringField(body, "id"))));
+				.compose(res -> res.idField("id"));
 	}
 
 	// The configured node id, or the one the Director reports, looked up once it is needed. Concurrent
@@ -340,7 +337,7 @@ public class DirectorClient {
 						new RegistrationDisabledException(NotFoundException.STATUS,
 								"This node does not accept proof-of-work registration; it registers users through OAuth only") :
 						e))
-				.compose(res -> decode(res, Challenge::parse));
+				.compose(res -> res.decode(Challenge::parse));
 	}
 
 	private Future<RegistrationPowClient.Result> solve(Id nid, Signature.KeyPair uk, Challenge challenge) {
@@ -452,7 +449,7 @@ public class DirectorClient {
 	public CompletableFuture<List<Device>> listDevices() {
 		checkOpen();
 		return ContextualFuture.of(call(HttpMethod.GET, "/devices", null, true)
-				.compose(res -> decode(res, jsonList(Device.class))));
+				.compose(res -> res.jsonList(Device.class)));
 	}
 
 	/**
@@ -593,7 +590,7 @@ public class DirectorClient {
 
 	private Future<Profile> fetchProfile() {
 		return call(HttpMethod.GET, "/profile", null, true)
-				.compose(res -> decode(res, json(Profile.class)));
+				.compose(res -> res.json(Profile.class));
 	}
 
 	// ---- Avatar --------------------------------------------------------------------------------
@@ -656,7 +653,7 @@ public class DirectorClient {
 
 	private Future<String> uploadAvatar(Buffer image, String contentType) {
 		return call(HttpMethod.PUT, "/avatar", image, contentType, true)
-				.compose(res -> decode(res, body -> stringField(body, "uri")));
+				.compose(res -> res.stringField("uri"));
 	}
 
 	// The Director stores only these two types; it would fail anything else, and not as a bad request.
@@ -702,11 +699,11 @@ public class DirectorClient {
 		Future<Profile> profile = fetchProfile();
 		Future<Subscription> subscription = call(HttpMethod.GET, "/subscriptions/active", null, true)
 				.compose(res -> res.statusCode() == 204 ? Future.<Subscription>succeededFuture(null) :
-						decode(res, json(Subscription.class)))
+						res.json(Subscription.class))
 				// The API documents a 404 for "no active subscription"; the Director answers 204.
 				.recover(e -> e instanceof NotFoundException ? Future.succeededFuture(null) : Future.failedFuture(e));
 		Future<List<Plan>> plans = call(HttpMethod.GET, "/plans", null, false)
-				.compose(res -> decode(res, jsonList(Plan.class)));
+				.compose(res -> res.jsonList(Plan.class));
 
 		return ContextualFuture.of(Future.all(profile, subscription, plans).map(v -> {
 			String name = profile.result().getPlanName();
@@ -763,9 +760,9 @@ public class DirectorClient {
 		private static Challenge parse(Buffer body) {
 			JsonObject json = new JsonObject(body);
 			return new Challenge(
-					Json.BASE64_DECODER.decode(stringField(body, "challenge")),
-					Json.BASE64_DECODER.decode(stringField(body, "challengeSig")),
-					Json.BASE64_DECODER.decode(stringField(body, "nonce")),
+					Json.BASE64_DECODER.decode(requiredString(json, "challenge")),
+					Json.BASE64_DECODER.decode(requiredString(json, "challengeSig")),
+					Json.BASE64_DECODER.decode(requiredString(json, "nonce")),
 					Objects.requireNonNull(json.getInteger("n"), "missing 'n'"),
 					Objects.requireNonNull(json.getInteger("k"), "missing 'k'"),
 					Objects.requireNonNull(json.getInteger("effort"), "missing 'effort'"));

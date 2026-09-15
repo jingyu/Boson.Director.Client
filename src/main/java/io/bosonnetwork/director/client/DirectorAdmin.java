@@ -22,15 +22,9 @@
 
 package io.bosonnetwork.director.client;
 
-import static io.bosonnetwork.director.client.DirectorTransport.decode;
 import static io.bosonnetwork.director.client.DirectorTransport.decodeKey;
 import static io.bosonnetwork.director.client.DirectorTransport.encode;
-import static io.bosonnetwork.director.client.DirectorTransport.json;
-import static io.bosonnetwork.director.client.DirectorTransport.jsonList;
-import static io.bosonnetwork.director.client.DirectorTransport.optional;
-import static io.bosonnetwork.director.client.DirectorTransport.paged;
 import static io.bosonnetwork.director.client.DirectorTransport.putIfNotNull;
-import static io.bosonnetwork.director.client.DirectorTransport.stringField;
 
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -240,7 +234,7 @@ public class DirectorAdmin {
 	// Unauthenticated: the access token is bound to the node id, so the lookup cannot carry one.
 	private Future<Id> fetchNodeId() {
 		return transport.call(HttpMethod.GET, "/id", null, null)
-				.compose(res -> decode(res, body -> Id.of(stringField(body, "id"))));
+				.compose(res -> res.idField("id"));
 	}
 
 	// ---- Users ---------------------------------------------------------------------------------
@@ -1034,7 +1028,7 @@ public class DirectorAdmin {
 		transport.checkOpen();
 
 		// The Director answers with the federated node, or with a JSON null when there is none.
-		return ContextualFuture.of(call(HttpMethod.POST, "/federation/proposals", body).compose(res -> decode(res, b -> {
+		return ContextualFuture.of(call(HttpMethod.POST, "/federation/proposals", body).compose(res -> res.decode(b -> {
 			if (b.toString(StandardCharsets.UTF_8).trim().equals("null"))
 				return Optional.<FederatedNode>empty();
 
@@ -1139,7 +1133,7 @@ public class DirectorAdmin {
 	private <T> CompletableFuture<T> submit(HttpMethod method, String path,
 			@Nullable Map<String, ?> body, Class<T> type) {
 		transport.checkOpen();
-		return ContextualFuture.of(call(method, path, body).compose(res -> decode(res, json(type))));
+		return ContextualFuture.of(call(method, path, body).compose(res -> res.json(type)));
 	}
 
 	private <T> CompletableFuture<T> fetch(Query query, Class<T> type) {
@@ -1148,20 +1142,23 @@ public class DirectorAdmin {
 
 	private <T> CompletableFuture<Optional<T>> find(Query query, Class<T> type) {
 		transport.checkOpen();
-		return ContextualFuture.of(optional(call(HttpMethod.GET, query.toString(), null)
-				.compose(res -> decode(res, json(type)))));
+		return ContextualFuture.of(call(HttpMethod.GET, query.toString(), null)
+				.compose(res -> res.json(type))
+				.map(Optional::of)
+				.recover(e -> e instanceof NotFoundException ?
+						Future.<Optional<T>>succeededFuture(Optional.empty()) : Future.<Optional<T>>failedFuture(e)));
 	}
 
 	private <T> CompletableFuture<List<T>> fetchList(Query query, Class<T> type) {
 		transport.checkOpen();
 		return ContextualFuture.of(call(HttpMethod.GET, query.toString(), null)
-				.compose(res -> decode(res, jsonList(type))));
+				.compose(res -> res.jsonList(type)));
 	}
 
 	private <T> CompletableFuture<PaginatedResult<T>> fetchPage(Query query, Class<T> type) {
 		transport.checkOpen();
 		return ContextualFuture.of(call(HttpMethod.GET, query.toString(), null)
-				.compose(res -> decode(res, paged(type))));
+				.compose(res -> res.paged(type)));
 	}
 
 	// A request path with its query string.

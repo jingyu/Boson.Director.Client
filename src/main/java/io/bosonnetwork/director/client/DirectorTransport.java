@@ -27,7 +27,6 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
@@ -50,7 +49,6 @@ import io.bosonnetwork.Id;
 import io.bosonnetwork.crypto.HybridTrustManager;
 import io.bosonnetwork.crypto.Signature;
 import io.bosonnetwork.director.client.exceptions.DirectorException;
-import io.bosonnetwork.director.client.exceptions.NotFoundException;
 import io.bosonnetwork.json.Json;
 import io.bosonnetwork.utils.Base58;
 import io.bosonnetwork.utils.Hex;
@@ -278,52 +276,54 @@ final class DirectorTransport {
 		String bodyAsString() {
 			return body.toString(StandardCharsets.UTF_8);
 		}
-	}
 
-	// ---- Decoding ------------------------------------------------------------------------------
+		// Parses the body. A missing or malformed body fails with a DirectorException, like any other
+		// failed call.
+		<T> Future<T> decode(BodyParser<T> parser) {
+			try {
+				if (body.length() == 0)
+					throw new IllegalArgumentException("empty response body");
 
-	static <T> Future<T> decode(Response response, BodyParser<T> parser) {
-		Buffer body = response.body();
-		try {
-			if (body.length() == 0)
-				throw new IllegalArgumentException("empty response body");
+				return Future.succeededFuture(parser.parse(body));
+			} catch (Exception e) {
+				return Future.failedFuture(new DirectorException(statusCode,
+						"Malformed Director response: " + e.getMessage(), e));
+			}
+		}
 
-			return Future.succeededFuture(parser.parse(body));
-		} catch (Exception e) {
-			return Future.failedFuture(new DirectorException(response.statusCode(),
-					"Malformed Director response: " + e.getMessage(), e));
+		<T> Future<T> json(Class<T> type) {
+			return decode(body -> Json.objectMapper().readValue(body.getBytes(), type));
+		}
+
+		<T> Future<List<T>> jsonList(Class<T> type) {
+			JavaType listType = Json.objectMapper().getTypeFactory().constructCollectionType(List.class, type);
+			return decode(body -> Json.objectMapper().readValue(body.getBytes(), listType));
+		}
+
+		<T> Future<PaginatedResult<T>> paged(Class<T> type) {
+			JavaType pageType = Json.objectMapper().getTypeFactory().constructParametricType(PaginatedResult.class, type);
+			return decode(body -> Json.objectMapper().readValue(body.getBytes(), pageType));
+		}
+
+		Future<String> stringField(String name) {
+			return decode(body -> requiredString(new JsonObject(body), name));
+		}
+
+		Future<Id> idField(String name) {
+			return decode(body -> Id.of(requiredString(new JsonObject(body), name)));
 		}
 	}
 
-	static <T> BodyParser<T> json(Class<T> type) {
-		return body -> Json.objectMapper().readValue(body.getBytes(), type);
-	}
+	// ---- Helpers -------------------------------------------------------------------------------
 
-	static <T> BodyParser<List<T>> jsonList(Class<T> type) {
-		JavaType listType = Json.objectMapper().getTypeFactory().constructCollectionType(List.class, type);
-		return body -> Json.objectMapper().readValue(body.getBytes(), listType);
-	}
-
-	static <T> BodyParser<PaginatedResult<T>> paged(Class<T> type) {
-		JavaType pageType = Json.objectMapper().getTypeFactory().constructParametricType(PaginatedResult.class, type);
-		return body -> Json.objectMapper().readValue(body.getBytes(), pageType);
-	}
-
-	static String stringField(Buffer body, String name) {
-		String value = new JsonObject(body).getString(name);
+	// Reads a string field of a Director response that must be present and not empty.
+	static String requiredString(JsonObject json, String name) {
+		String value = json.getString(name);
 		if (value == null || value.isEmpty())
 			throw new IllegalArgumentException("missing '" + name + "'");
 
 		return value;
 	}
-
-	// Completes empty where the Director answered that the thing asked for does not exist.
-	static <T> Future<Optional<T>> optional(Future<T> future) {
-		return future.map(Optional::of).recover(e -> e instanceof NotFoundException ?
-				Future.<Optional<T>>succeededFuture(Optional.empty()) : Future.<Optional<T>>failedFuture(e));
-	}
-
-	// ---- Helpers -------------------------------------------------------------------------------
 
 	// Encodes a value for use as one path segment or one query parameter value.
 	static String encode(String value) {
