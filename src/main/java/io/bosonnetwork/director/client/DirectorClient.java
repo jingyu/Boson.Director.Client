@@ -26,6 +26,7 @@ import static io.bosonnetwork.director.client.DirectorTransport.decodeKey;
 import static io.bosonnetwork.director.client.DirectorTransport.putIfNotNull;
 import static io.bosonnetwork.director.client.DirectorTransport.requiredString;
 
+import java.net.InetSocketAddress;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.file.Path;
@@ -179,7 +180,7 @@ public class DirectorClient {
 		this.deviceKey = builder.deviceKey;
 		this.deviceId = deviceKey != null ? Id.of(deviceKey.publicKey().bytes()) : null;
 
-		this.transport = new DirectorTransport(vertx, directorUrl, CLIENT_API, nodeId, log);
+		this.transport = new DirectorTransport(vertx, directorUrl, CLIENT_API, nodeId, builder.resolveToAddress, log);
 
 		// Tokens are signed with the user key when the client has it: that works before any device is
 		// registered. A device signs its own, naming itself as the client.
@@ -795,6 +796,7 @@ public class DirectorClient {
 		private Signature.KeyPair userKey;
 		private Id userId;
 		private Signature.KeyPair deviceKey;
+		private InetSocketAddress resolveToAddress;
 
 		private Builder() {
 			// Adopt the Vert.x instance of the calling context, if there is one.
@@ -858,6 +860,24 @@ public class DirectorClient {
 		 */
 		public Builder nodeId(Id nodeId) {
 			this.nodeId = Objects.requireNonNull(nodeId, "nodeId");
+			return this;
+		}
+
+		/**
+		 * Sets the address to connect to instead of looking up the Director URL's host name (optional).
+		 * Requests still name the URL's host, and TLS still verifies the certificate against it: this
+		 * changes where the client connects, never what it trusts. It reaches a Director over loopback,
+		 * a LAN address or a tunnel while the URL keeps the name its certificate was issued for.
+		 *
+		 * @param address the address to connect to, resolved
+		 * @return this builder
+		 * @throws IllegalArgumentException if the address is unresolved
+		 */
+		public Builder resolveToAddress(InetSocketAddress address) {
+			Objects.requireNonNull(address, "address");
+			if (address.isUnresolved())
+				throw new IllegalArgumentException("Unresolved address: " + address);
+			this.resolveToAddress = address;
 			return this;
 		}
 

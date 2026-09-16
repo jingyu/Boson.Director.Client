@@ -22,6 +22,7 @@
 
 package io.bosonnetwork.director.client;
 
+import java.net.InetSocketAddress;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -41,6 +42,7 @@ import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.json.JsonObject;
+import io.vertx.core.net.SocketAddress;
 import io.vertx.core.net.TrustOptions;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -95,6 +97,11 @@ final class DirectorTransport {
 	// Director URL path (sans trailing slash), the API version prefix and the API path; request paths
 	// append to it.
 	private final String basePath;
+	// The URL host and port every request names.
+	private final String host;
+	private final int port;
+	// Where to connect instead of looking up the URL host, or null to look it up.
+	private final @Nullable SocketAddress server;
 	private final HttpClient httpClient;
 
 	private volatile boolean closed;
@@ -102,14 +109,19 @@ final class DirectorTransport {
 	/**
 	 * Creates a transport for one Director API.
 	 *
-	 * @param vertx       the Vert.x instance the transport runs on
-	 * @param directorUrl the Director URL
-	 * @param apiPath     the API path below {@code /api/v1}, such as {@code /client}
-	 * @param nodeId      the super node id a self-signed certificate is pinned to, or {@code null}
-	 * @param log         the logger of the owning client
+	 * @param vertx          the Vert.x instance the transport runs on
+	 * @param directorUrl    the Director URL
+	 * @param apiPath        the API path below {@code /api/v1}, such as {@code /client}
+	 * @param nodeId         the super node id a self-signed certificate is pinned to, or {@code null}
+	 * @param resolveToAddress the address to connect to instead of looking up the URL host, or {@code null}
+	 * @param log            the logger of the owning client
 	 */
-	DirectorTransport(Vertx vertx, URL directorUrl, String apiPath, @Nullable Id nodeId, Logger log) {
+	DirectorTransport(Vertx vertx, URL directorUrl, String apiPath, @Nullable Id nodeId,
+			@Nullable InetSocketAddress resolveToAddress, Logger log) {
 		this.log = log;
+		this.host = directorUrl.getHost();
+		this.port = directorUrl.getPort() > 0 ? directorUrl.getPort() : directorUrl.getDefaultPort();
+		this.server = resolveToAddress != null ? SocketAddress.inetSocketAddress(resolveToAddress) : null;
 
 		boolean ssl = directorUrl.getProtocol().equals("https");
 		this.basePath = directorUrl.getPath().replaceAll("/+$", "") + API_VERSION_PREFIX + apiPath;
@@ -206,6 +218,10 @@ final class DirectorTransport {
 		RequestOptions request = new RequestOptions()
 				.setMethod(method)
 				.setURI(basePath + path);
+		// The host - and with it the Host header, SNI and the certificate check - stays the URL's; only
+		// the connection goes elsewhere. Named explicitly, since Vert.x otherwise takes it from the server.
+		if (server != null)
+			request.setServer(server).setHost(host).setPort(port);
 		if (accessToken != null)
 			request.putHeader("Authorization", "Bearer " + accessToken);
 		if (body != null && contentType != null)

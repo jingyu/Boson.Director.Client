@@ -103,6 +103,10 @@ Use an `https` Director URL for any Director that is not on the local machine. A
 a public CA is validated as usual. Configure `nodeId(...)` to also accept a self-signed Director
 certificate pinned to the node's id.
 
+To reach a Director at another address than its host name resolves to - over loopback, a LAN address
+or a tunnel - configure `resolveToAddress(...)`. The client connects there, while requests still name
+the URL's host and TLS still verifies the certificate against it.
+
 ## Admin client
 
 `DirectorAdmin` covers the Director's admin API: users and their devices, subscriptions and payments,
