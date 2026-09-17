@@ -205,7 +205,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the node id
 	 */
 	public CompletableFuture<Id> getNodeId() {
-		transport.checkOpen();
+		checkOpen();
 		return ContextualFuture.of(fetchNodeId());
 	}
 
@@ -215,6 +215,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the node status
 	 */
 	public CompletableFuture<NodeStatus> getNodeStatus() {
+		checkOpen();
 		return fetch(new Query("/node"), NodeStatus.class);
 	}
 
@@ -249,6 +250,7 @@ public class DirectorAdmin {
 	 *         {@link io.bosonnetwork.director.client.exceptions.ConflictException} if the user exists
 	 */
 	public CompletableFuture<Void> addUser(NewUser user) {
+		checkOpen();
 		Objects.requireNonNull(user, "user");
 		return execute(HttpMethod.POST, "/users", user.fields());
 	}
@@ -259,6 +261,7 @@ public class DirectorAdmin {
 	 * @return a future completing with every user
 	 */
 	public CompletableFuture<PaginatedResult<Profile>> listUsers() {
+		checkOpen();
 		return fetchPage(new Query("/users"), Profile.class);
 	}
 
@@ -273,6 +276,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the page or page size is below 1
 	 */
 	public CompletableFuture<PaginatedResult<Profile>> listUsers(long page, long pageSize, Sort... sort) {
+		checkOpen();
 		return fetchPage(new Query("/users").page(page, pageSize).sort(sort), Profile.class);
 	}
 
@@ -283,6 +287,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the user, or empty if there is no such user
 	 */
 	public CompletableFuture<Optional<Profile>> getUser(Id userId) {
+		checkOpen();
 		return find(new Query(userPath(userId)), Profile.class);
 	}
 
@@ -295,6 +300,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the update changes nothing
 	 */
 	public CompletableFuture<Void> updateUser(Id userId, UserUpdate update) {
+		checkOpen();
 		String path = userPath(userId);
 		checkUpdate(update.isEmpty(), "user");
 		return execute(HttpMethod.PUT, path, update.fields());
@@ -307,6 +313,7 @@ public class DirectorAdmin {
 	 * @return a future completing when the user is removed
 	 */
 	public CompletableFuture<Void> removeUser(Id userId) {
+		checkOpen();
 		return execute(HttpMethod.DELETE, userPath(userId), null);
 	}
 
@@ -326,6 +333,7 @@ public class DirectorAdmin {
 	 *         already registered
 	 */
 	public CompletableFuture<Void> addDevice(Id userId, Id deviceId, String deviceName, String appName) {
+		checkOpen();
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
 		body.put("userId", Objects.requireNonNull(userId, "userId"));
 		body.put("deviceId", Objects.requireNonNull(deviceId, "deviceId"));
@@ -342,6 +350,7 @@ public class DirectorAdmin {
 	 *         is no such user
 	 */
 	public CompletableFuture<List<Device>> listDevices(Id userId) {
+		checkOpen();
 		return fetchList(new Query(userPath(userId) + "/devices"), Device.class);
 	}
 
@@ -352,6 +361,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the device, or empty if there is no such device
 	 */
 	public CompletableFuture<Optional<Device>> getDevice(Id deviceId) {
+		checkOpen();
 		return find(new Query(devicePath(deviceId)), Device.class);
 	}
 
@@ -362,6 +372,7 @@ public class DirectorAdmin {
 	 * @return a future completing when the device is removed
 	 */
 	public CompletableFuture<Void> removeDevice(Id deviceId) {
+		checkOpen();
 		return execute(HttpMethod.DELETE, devicePath(deviceId), null);
 	}
 
@@ -383,6 +394,7 @@ public class DirectorAdmin {
 	 */
 	public CompletableFuture<Subscription> addSubscription(Id userId, int planId, Subscription.Status status,
 			long startDate, long endDate) {
+		checkOpen();
 		checkId(planId, "planId");
 		return submitSubscription(userId, planId, status, startDate, endDate);
 	}
@@ -401,6 +413,7 @@ public class DirectorAdmin {
 	 */
 	public CompletableFuture<Subscription> addSubscription(Id userId, String planName, Subscription.Status status,
 			long startDate, long endDate) {
+		checkOpen();
 		checkNotEmpty(planName, "planName");
 		return submitSubscription(userId, planName, status, startDate, endDate);
 	}
@@ -433,6 +446,7 @@ public class DirectorAdmin {
 	 *         there is no such user
 	 */
 	public CompletableFuture<PaginatedResult<Subscription>> listSubscriptions(Id userId) {
+		checkOpen();
 		return fetchPage(new Query(userSubscriptionsPath(userId)), Subscription.class);
 	}
 
@@ -446,6 +460,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the page or page size is below 1
 	 */
 	public CompletableFuture<PaginatedResult<Subscription>> listSubscriptions(Id userId, long page, long pageSize) {
+		checkOpen();
 		return fetchPage(new Query(userSubscriptionsPath(userId)).page(page, pageSize), Subscription.class);
 	}
 
@@ -457,6 +472,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the id is not positive
 	 */
 	public CompletableFuture<Optional<Subscription>> getSubscription(long subscriptionId) {
+		checkOpen();
 		return find(new Query(subscriptionPath(subscriptionId)), Subscription.class);
 	}
 
@@ -467,6 +483,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the subscription, or empty if the user has none
 	 */
 	public CompletableFuture<Optional<Subscription>> getActiveSubscription(Id userId) {
+		checkOpen();
 		return find(new Query(userSubscriptionsPath(userId) + "/active"), Subscription.class);
 	}
 
@@ -479,6 +496,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the id is not positive, or the update changes nothing
 	 */
 	public CompletableFuture<Void> updateSubscription(long subscriptionId, SubscriptionUpdate update) {
+		checkOpen();
 		String path = subscriptionPath(subscriptionId);
 		checkUpdate(update.isEmpty(), "subscription");
 		return execute(HttpMethod.PUT, path, update.fields());
@@ -494,6 +512,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the id is not positive
 	 */
 	public CompletableFuture<Void> cancelSubscription(long subscriptionId) {
+		checkOpen();
 		return execute(HttpMethod.DELETE, subscriptionPath(subscriptionId), null);
 	}
 
@@ -507,6 +526,7 @@ public class DirectorAdmin {
 	 *         user or subscription does not exist
 	 */
 	public CompletableFuture<Payment> addPayment(NewPayment payment) {
+		checkOpen();
 		Objects.requireNonNull(payment, "payment");
 		return submit(HttpMethod.POST, "/payments", payment.fields(), Payment.class);
 	}
@@ -519,6 +539,7 @@ public class DirectorAdmin {
 	 *         is no such user
 	 */
 	public CompletableFuture<PaginatedResult<Payment>> listPayments(Id userId) {
+		checkOpen();
 		return fetchPage(new Query(userPaymentsPath(userId)), Payment.class);
 	}
 
@@ -532,6 +553,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the page or page size is below 1
 	 */
 	public CompletableFuture<PaginatedResult<Payment>> listPayments(Id userId, long page, long pageSize) {
+		checkOpen();
 		return fetchPage(new Query(userPaymentsPath(userId)).page(page, pageSize), Payment.class);
 	}
 
@@ -543,6 +565,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the id is not positive
 	 */
 	public CompletableFuture<Optional<Payment>> getPayment(long paymentId) {
+		checkOpen();
 		return find(new Query(paymentPath(paymentId)), Payment.class);
 	}
 
@@ -557,6 +580,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the id is not positive
 	 */
 	public CompletableFuture<Void> updatePayment(long paymentId, PaymentUpdate update) {
+		checkOpen();
 		String path = paymentPath(paymentId);
 		Objects.requireNonNull(update, "update");
 		return execute(HttpMethod.PUT, path, update.fields());
@@ -572,6 +596,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the id is not positive
 	 */
 	public CompletableFuture<Void> cancelPayment(long paymentId) {
+		checkOpen();
 		return execute(HttpMethod.DELETE, paymentPath(paymentId), null);
 	}
 
@@ -584,6 +609,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the plan, including its id
 	 */
 	public CompletableFuture<Plan> addPlan(NewPlan plan) {
+		checkOpen();
 		Objects.requireNonNull(plan, "plan");
 		return submit(HttpMethod.POST, "/plans", plan.fields(), Plan.class);
 	}
@@ -594,6 +620,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the plans
 	 */
 	public CompletableFuture<List<Plan>> listPlans() {
+		checkOpen();
 		return fetchList(new Query("/plans"), Plan.class);
 	}
 
@@ -605,6 +632,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the id is not positive
 	 */
 	public CompletableFuture<Optional<Plan>> getPlan(int planId) {
+		checkOpen();
 		return find(new Query(planPath(planId)), Plan.class);
 	}
 
@@ -616,6 +644,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the name is empty
 	 */
 	public CompletableFuture<Optional<Plan>> getPlan(String planName) {
+		checkOpen();
 		return find(new Query(planPath(planName)), Plan.class);
 	}
 
@@ -628,6 +657,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the id is not positive, or the update changes nothing
 	 */
 	public CompletableFuture<Void> updatePlan(int planId, PlanUpdate update) {
+		checkOpen();
 		String path = planPath(planId);
 		checkUpdate(update.isEmpty(), "plan");
 		return execute(HttpMethod.PUT, path, update.fields());
@@ -642,6 +672,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the name is empty, or the update changes nothing
 	 */
 	public CompletableFuture<Void> updatePlan(String planName, PlanUpdate update) {
+		checkOpen();
 		String path = planPath(planName);
 		checkUpdate(update.isEmpty(), "plan");
 		return execute(HttpMethod.PUT, path, update.fields());
@@ -655,6 +686,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the id is not positive
 	 */
 	public CompletableFuture<Void> deactivatePlan(int planId) {
+		checkOpen();
 		return execute(HttpMethod.DELETE, planPath(planId), null);
 	}
 
@@ -666,6 +698,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the name is empty
 	 */
 	public CompletableFuture<Void> deactivatePlan(String planName) {
+		checkOpen();
 		return execute(HttpMethod.DELETE, planPath(planName), null);
 	}
 
@@ -682,6 +715,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the plan id is not positive, or the service id is empty
 	 */
 	public CompletableFuture<Feature> addFeature(int planId, String serviceId, Map<String, ?> feature) {
+		checkOpen();
 		checkId(planId, "planId");
 		return submitFeature(planId, serviceId, feature);
 	}
@@ -697,6 +731,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the plan name or service id is empty
 	 */
 	public CompletableFuture<Feature> addFeature(String planName, String serviceId, Map<String, ?> feature) {
+		checkOpen();
 		checkNotEmpty(planName, "planName");
 		return submitFeature(planName, serviceId, feature);
 	}
@@ -719,6 +754,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the features
 	 */
 	public CompletableFuture<List<Feature>> listFeatures() {
+		checkOpen();
 		return fetchList(new Query("/features"), Feature.class);
 	}
 
@@ -731,6 +767,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the features
 	 */
 	public CompletableFuture<List<Feature>> listFeatures(FeatureFilter filter, Sort... sort) {
+		checkOpen();
 		Objects.requireNonNull(filter, "filter");
 		Query query = new Query("/features");
 		String plan = filter.getPlan();
@@ -750,6 +787,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the id is not positive
 	 */
 	public CompletableFuture<Optional<Feature>> getFeature(int featureId) {
+		checkOpen();
 		return find(new Query(featurePath(featureId)), Feature.class);
 	}
 
@@ -762,6 +800,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the id is not positive, or the update changes nothing
 	 */
 	public CompletableFuture<Void> updateFeature(int featureId, FeatureUpdate update) {
+		checkOpen();
 		String path = featurePath(featureId);
 		checkUpdate(update.isEmpty(), "feature");
 		return execute(HttpMethod.PUT, path, update.fields());
@@ -775,6 +814,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the id is not positive
 	 */
 	public CompletableFuture<Void> removeFeature(int featureId) {
+		checkOpen();
 		return execute(HttpMethod.DELETE, featurePath(featureId), null);
 	}
 
@@ -788,6 +828,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the blacklist entry
 	 */
 	public CompletableFuture<BlacklistedNode> addBlacklistedNode(Id nodeId, @Nullable String reason) {
+		checkOpen();
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
 		body.put("nodeId", Objects.requireNonNull(nodeId, "nodeId"));
 		putIfNotNull(body, "reason", reason);
@@ -804,6 +845,7 @@ public class DirectorAdmin {
 	 *         would read it back as an entry id)
 	 */
 	public CompletableFuture<BlacklistedNode> addBlacklistedHost(String host, @Nullable String reason) {
+		checkOpen();
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
 		body.put("nodeHost", checkHost(host));
 		putIfNotNull(body, "reason", reason);
@@ -816,6 +858,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the entries
 	 */
 	public CompletableFuture<PaginatedResult<BlacklistedNode>> listBlacklistedNodes() {
+		checkOpen();
 		return fetchPage(new Query("/blacklist"), BlacklistedNode.class);
 	}
 
@@ -828,6 +871,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the page or page size is below 1
 	 */
 	public CompletableFuture<PaginatedResult<BlacklistedNode>> listBlacklistedNodes(long page, long pageSize) {
+		checkOpen();
 		return fetchPage(new Query("/blacklist").page(page, pageSize), BlacklistedNode.class);
 	}
 
@@ -839,6 +883,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the id is not positive
 	 */
 	public CompletableFuture<Optional<BlacklistedNode>> getBlacklistedNode(long id) {
+		checkOpen();
 		return find(new Query(blacklistPath(id)), BlacklistedNode.class);
 	}
 
@@ -849,6 +894,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the entry, or empty if the node is not blacklisted
 	 */
 	public CompletableFuture<Optional<BlacklistedNode>> getBlacklistedNode(Id nodeId) {
+		checkOpen();
 		return find(new Query(blacklistPath(nodeId)), BlacklistedNode.class);
 	}
 
@@ -860,6 +906,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the host is empty, or made only of digits
 	 */
 	public CompletableFuture<Optional<BlacklistedNode>> getBlacklistedHost(String host) {
+		checkOpen();
 		return find(new Query(blacklistPath(host)), BlacklistedNode.class);
 	}
 
@@ -872,6 +919,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the id is not positive, or the update changes nothing
 	 */
 	public CompletableFuture<Void> updateBlacklistedNode(long id, BlacklistUpdate update) {
+		checkOpen();
 		String path = blacklistPath(id);
 		checkUpdate(update.isEmpty(), "blacklist");
 		return execute(HttpMethod.PUT, path, update.fields());
@@ -886,6 +934,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the update changes nothing
 	 */
 	public CompletableFuture<Void> updateBlacklistedNode(Id nodeId, BlacklistUpdate update) {
+		checkOpen();
 		String path = blacklistPath(nodeId);
 		checkUpdate(update.isEmpty(), "blacklist");
 		return execute(HttpMethod.PUT, path, update.fields());
@@ -901,6 +950,7 @@ public class DirectorAdmin {
 	 *         changes nothing
 	 */
 	public CompletableFuture<Void> updateBlacklistedHost(String host, BlacklistUpdate update) {
+		checkOpen();
 		String path = blacklistPath(host);
 		checkUpdate(update.isEmpty(), "blacklist");
 		return execute(HttpMethod.PUT, path, update.fields());
@@ -914,6 +964,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the id is not positive
 	 */
 	public CompletableFuture<Void> removeBlacklistedNode(long id) {
+		checkOpen();
 		return execute(HttpMethod.DELETE, blacklistPath(id), null);
 	}
 
@@ -924,6 +975,7 @@ public class DirectorAdmin {
 	 * @return a future completing when the entry is removed
 	 */
 	public CompletableFuture<Void> removeBlacklistedNode(Id nodeId) {
+		checkOpen();
 		return execute(HttpMethod.DELETE, blacklistPath(nodeId), null);
 	}
 
@@ -935,6 +987,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the host is empty, or made only of digits
 	 */
 	public CompletableFuture<Void> removeBlacklistedHost(String host) {
+		checkOpen();
 		return execute(HttpMethod.DELETE, blacklistPath(host), null);
 	}
 
@@ -946,6 +999,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the nodes
 	 */
 	public CompletableFuture<PaginatedResult<FederatedNode>> listFederatedNodes() {
+		checkOpen();
 		return fetchPage(new Query("/federation/nodes"), FederatedNode.class);
 	}
 
@@ -958,6 +1012,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the page or page size is below 1
 	 */
 	public CompletableFuture<PaginatedResult<FederatedNode>> listFederatedNodes(long page, long pageSize) {
+		checkOpen();
 		return fetchPage(new Query("/federation/nodes").page(page, pageSize), FederatedNode.class);
 	}
 
@@ -968,6 +1023,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the node, or empty if this node has not federated with it
 	 */
 	public CompletableFuture<Optional<FederatedNode>> getFederatedNode(Id nodeId) {
+		checkOpen();
 		return find(new Query(federatedNodePath(nodeId)), FederatedNode.class);
 	}
 
@@ -981,6 +1037,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the update changes nothing
 	 */
 	public CompletableFuture<Void> updateFederatedNode(Id nodeId, FederatedNodeUpdate update) {
+		checkOpen();
 		String path = federatedNodePath(nodeId);
 		checkUpdate(update.isEmpty(), "federated node");
 		return execute(HttpMethod.PUT, path, update.fields());
@@ -993,6 +1050,7 @@ public class DirectorAdmin {
 	 * @return a future completing when the node is removed
 	 */
 	public CompletableFuture<Void> removeFederatedNode(Id nodeId) {
+		checkOpen();
 		return execute(HttpMethod.DELETE, federatedNodePath(nodeId), null);
 	}
 
@@ -1003,6 +1061,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the services, empty if the node shares none
 	 */
 	public CompletableFuture<List<FederatedService>> listFederatedServices(Id nodeId) {
+		checkOpen();
 		return fetchList(new Query("/federation/services/" + Objects.requireNonNull(nodeId, "nodeId").toBase58String()),
 				FederatedService.class);
 	}
@@ -1024,9 +1083,9 @@ public class DirectorAdmin {
 	 *         422 if it cannot be found or validated as a super node
 	 */
 	public CompletableFuture<Optional<FederatedNode>> proposeFederation(Id nodeId) {
+		checkOpen();
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
 		body.put("nodeId", Objects.requireNonNull(nodeId, "nodeId"));
-		transport.checkOpen();
 
 		// The Director answers with the federated node, or with a JSON null when there is none.
 		return ContextualFuture.of(call(HttpMethod.POST, "/federation/proposals", body).compose(res -> res.decode(b -> {
@@ -1043,6 +1102,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the proposals
 	 */
 	public CompletableFuture<PaginatedResult<FederationProposal>> listFederationProposals() {
+		checkOpen();
 		return fetchPage(new Query("/federation/proposals"), FederationProposal.class);
 	}
 
@@ -1053,6 +1113,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the proposals
 	 */
 	public CompletableFuture<PaginatedResult<FederationProposal>> listFederationProposals(ProposalFilter filter) {
+		checkOpen();
 		return fetchPage(proposalQuery(filter), FederationProposal.class);
 	}
 
@@ -1069,6 +1130,7 @@ public class DirectorAdmin {
 	 */
 	public CompletableFuture<PaginatedResult<FederationProposal>> listFederationProposals(ProposalFilter filter,
 			long page, long pageSize, Sort... sort) {
+		checkOpen();
 		return fetchPage(proposalQuery(filter).page(page, pageSize).sort(sort), FederationProposal.class);
 	}
 
@@ -1080,6 +1142,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the id is not positive
 	 */
 	public CompletableFuture<Optional<FederationProposal>> getFederationProposal(long proposalId) {
+		checkOpen();
 		return find(new Query(proposalPath(proposalId)), FederationProposal.class);
 	}
 
@@ -1091,6 +1154,7 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the id is not positive
 	 */
 	public CompletableFuture<Void> removeFederationProposal(long proposalId) {
+		checkOpen();
 		return execute(HttpMethod.DELETE, proposalPath(proposalId), null);
 	}
 
@@ -1117,7 +1181,8 @@ public class DirectorAdmin {
 	// ---- Requests ------------------------------------------------------------------------------
 
 	// Sends an authenticated request to the admin API. Every call goes through here, so adding one to
-	// this client is a method that names its path and decodes its answer.
+	// this client is a method that checks the client is open, names its path and decodes its answer -
+	// most of them through one of the helpers below, which only send and decode.
 	private Future<DirectorTransport.Response> call(HttpMethod method, String path,
 			@Nullable Map<String, ?> body) {
 		return transport.call(method, path, body, tokens);
@@ -1126,14 +1191,12 @@ public class DirectorAdmin {
 	// A request answered with no content.
 	private CompletableFuture<Void> execute(HttpMethod method, String path,
 			@Nullable Map<String, ?> body) {
-		transport.checkOpen();
 		return ContextualFuture.of(call(method, path, body).<Void>mapEmpty());
 	}
 
 	// A request answered with one object.
 	private <T> CompletableFuture<T> submit(HttpMethod method, String path,
 			@Nullable Map<String, ?> body, Class<T> type) {
-		transport.checkOpen();
 		return ContextualFuture.of(call(method, path, body).compose(res -> res.json(type)));
 	}
 
@@ -1142,7 +1205,6 @@ public class DirectorAdmin {
 	}
 
 	private <T> CompletableFuture<Optional<T>> find(Query query, Class<T> type) {
-		transport.checkOpen();
 		return ContextualFuture.of(call(HttpMethod.GET, query.toString(), null)
 				.compose(res -> res.json(type))
 				.map(Optional::of)
@@ -1151,13 +1213,11 @@ public class DirectorAdmin {
 	}
 
 	private <T> CompletableFuture<List<T>> fetchList(Query query, Class<T> type) {
-		transport.checkOpen();
 		return ContextualFuture.of(call(HttpMethod.GET, query.toString(), null)
 				.compose(res -> res.jsonList(type)));
 	}
 
 	private <T> CompletableFuture<PaginatedResult<T>> fetchPage(Query query, Class<T> type) {
-		transport.checkOpen();
 		return ContextualFuture.of(call(HttpMethod.GET, query.toString(), null)
 				.compose(res -> res.paged(type)));
 	}
@@ -1199,6 +1259,10 @@ public class DirectorAdmin {
 	}
 
 	// ---- Helpers -------------------------------------------------------------------------------
+
+	private void checkOpen() {
+		transport.checkOpen();
+	}
 
 	private static String userPath(Id userId) {
 		return "/users/" + Objects.requireNonNull(userId, "userId").toBase58String();

@@ -312,8 +312,8 @@ public class DirectorClient {
 	 *         initial device and the client has no device key
 	 */
 	public CompletableFuture<Void> registerUser(UserRegistration registration) {
-		Objects.requireNonNull(registration, "registration");
 		checkOpen();
+		Objects.requireNonNull(registration, "registration");
 
 		Signature.KeyPair uk = userKey;
 		if (uk == null)
@@ -425,10 +425,10 @@ public class DirectorClient {
 	 */
 	public CompletableFuture<Void> registerDevice(Signature.KeyPair key, String deviceName, String appName,
 			@Nullable String passphrase) {
+		checkOpen();
 		Objects.requireNonNull(key, "key");
 		Objects.requireNonNull(deviceName, "deviceName");
 		Objects.requireNonNull(appName, "appName");
-		checkOpen();
 
 		byte[] nonce = Random.randomBytes(AUTH_NONCE_SIZE);
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
@@ -439,7 +439,7 @@ public class DirectorClient {
 		body.put("deviceSig", key.privateKey().sign(nonce));
 		putIfNotNull(body, "passphrase", passphrase);
 
-		return ContextualFuture.of(call(HttpMethod.POST, "/devices", body, true).mapEmpty());
+		return execute(HttpMethod.POST, "/devices", body);
 	}
 
 	/**
@@ -449,8 +449,7 @@ public class DirectorClient {
 	 */
 	public CompletableFuture<List<Device>> listDevices() {
 		checkOpen();
-		return ContextualFuture.of(call(HttpMethod.GET, "/devices", null, true)
-				.compose(res -> res.jsonList(Device.class)));
+		return fetchList("/devices", Device.class);
 	}
 
 	/**
@@ -474,15 +473,14 @@ public class DirectorClient {
 	 *         {@link NotFoundException} if the user has no such device
 	 */
 	public CompletableFuture<Void> removeDevice(Id deviceId, @Nullable String passphrase) {
-		Objects.requireNonNull(deviceId, "deviceId");
 		checkOpen();
+		Objects.requireNonNull(deviceId, "deviceId");
 
 		// Always send a body, if only an empty one: the Director parses one whenever it is present.
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
 		putIfNotNull(body, "passphrase", passphrase);
 
-		return ContextualFuture.of(call(HttpMethod.POST, "/devices/" + deviceId.toBase58String() + "/remove", body, true)
-				.mapEmpty());
+		return execute(HttpMethod.POST, "/devices/" + deviceId.toBase58String() + "/remove", body);
 	}
 
 	// ---- Passphrase ----------------------------------------------------------------------------
@@ -499,12 +497,12 @@ public class DirectorClient {
 	 * @throws IllegalArgumentException if the passphrase is empty
 	 */
 	public CompletableFuture<Void> setPassphrase(String passphrase) {
-		checkPassphrase(passphrase, "passphrase");
 		checkOpen();
+		checkPassphrase(passphrase, "passphrase");
 
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
 		body.put("passphrase", passphrase);
-		return ContextualFuture.of(call(HttpMethod.PUT, "/passphrase", body, true).mapEmpty());
+		return execute(HttpMethod.PUT, "/passphrase", body);
 	}
 
 	/**
@@ -518,14 +516,14 @@ public class DirectorClient {
 	 * @throws IllegalArgumentException if either passphrase is empty
 	 */
 	public CompletableFuture<Void> updatePassphrase(String currentPassphrase, String newPassphrase) {
+		checkOpen();
 		checkPassphrase(currentPassphrase, "currentPassphrase");
 		checkPassphrase(newPassphrase, "newPassphrase");
-		checkOpen();
 
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
 		body.put("passphrase", newPassphrase);
 		body.put("currentPassphrase", currentPassphrase);
-		return ContextualFuture.of(call(HttpMethod.PUT, "/passphrase", body, true).mapEmpty());
+		return execute(HttpMethod.PUT, "/passphrase", body);
 	}
 
 	/**
@@ -538,12 +536,12 @@ public class DirectorClient {
 	 * @throws IllegalArgumentException if the passphrase is empty
 	 */
 	public CompletableFuture<Void> clearPassphrase(String currentPassphrase) {
-		checkPassphrase(currentPassphrase, "currentPassphrase");
 		checkOpen();
+		checkPassphrase(currentPassphrase, "currentPassphrase");
 
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
 		body.put("passphrase", currentPassphrase);
-		return ContextualFuture.of(call(HttpMethod.POST, "/passphrase/clear", body, true).mapEmpty());
+		return execute(HttpMethod.POST, "/passphrase/clear", body);
 	}
 
 	// ---- Profile -------------------------------------------------------------------------------
@@ -579,14 +577,14 @@ public class DirectorClient {
 	 * @throws IllegalArgumentException if the update changes nothing
 	 */
 	public CompletableFuture<Void> updateProfile(ProfileUpdate update, @Nullable String passphrase) {
+		checkOpen();
 		Objects.requireNonNull(update, "update");
 		if (update.isEmpty())
 			throw new IllegalArgumentException("The profile update changes nothing");
-		checkOpen();
 
 		Map<String, @Nullable Object> body = new LinkedHashMap<>(update.fields());
 		putIfNotNull(body, "passphrase", passphrase);
-		return ContextualFuture.of(call(HttpMethod.PUT, "/profile", body, true).mapEmpty());
+		return execute(HttpMethod.PUT, "/profile", body);
 	}
 
 	private Future<Profile> fetchProfile() {
@@ -606,13 +604,12 @@ public class DirectorClient {
 	 * @throws IllegalArgumentException if the image is empty or the type is not PNG or JPEG
 	 */
 	public CompletableFuture<String> updateAvatar(byte[] image, String contentType) {
+		checkOpen();
 		Objects.requireNonNull(image, "image");
 		Objects.requireNonNull(contentType, "contentType");
 		if (image.length == 0)
 			throw new IllegalArgumentException("The avatar image is empty");
 		String type = avatarType(contentType);
-		checkOpen();
-
 		return ContextualFuture.of(uploadAvatar(Buffer.buffer(image), type));
 	}
 
@@ -626,10 +623,9 @@ public class DirectorClient {
 	 * @throws IllegalArgumentException if the file extension is not one of the above
 	 */
 	public CompletableFuture<String> updateAvatar(Path file) {
+		checkOpen();
 		Objects.requireNonNull(file, "file");
 		String type = avatarTypeOf(file);
-		checkOpen();
-
 		return ContextualFuture.of(vertx.fileSystem().readFile(file.toString())
 				.compose(image -> uploadAvatar(image, type)));
 	}
@@ -641,7 +637,6 @@ public class DirectorClient {
 	 */
 	public CompletableFuture<@Nullable Avatar> getAvatar() {
 		checkOpen();
-
 		Future<@Nullable Avatar> avatar = call(HttpMethod.GET, "/avatar", null, true)
 				.<@Nullable Avatar>map(res -> {
 					String type = res.getHeader("Content-Type");
@@ -693,7 +688,6 @@ public class DirectorClient {
 	 */
 	public CompletableFuture<UserPlan> getPlan() {
 		checkOpen();
-
 		// The profile names the plan the Director applies to the user - the plan of the active
 		// subscription, or the free plan without one - so it is the authority on the name. The catalog
 		// adds the details, and the subscription the terms.
@@ -724,8 +718,9 @@ public class DirectorClient {
 	// ---- HTTP ----------------------------------------------------------------------------------
 
 	// Sends a request with an optional JSON body to the client API. Every API call goes through here or
-	// the overload below, so adding one to this client is a method that names its path and decodes its
-	// answer.
+	// the overload below, so adding one to this client is a method that checks the client is open, names
+	// its path and decodes its answer - the simple ones through one of the helpers below, which only send
+	// and decode.
 	private Future<DirectorTransport.Response> call(HttpMethod method, String path,
 			@Nullable Map<String, ?> json, boolean authenticated) {
 		return transport.call(method, path, json, authenticated ? tokens : null);
@@ -734,6 +729,17 @@ public class DirectorClient {
 	private Future<DirectorTransport.Response> call(HttpMethod method, String path, @Nullable Buffer body,
 			@Nullable String contentType, boolean authenticated) {
 		return transport.call(method, path, body, contentType, authenticated ? tokens : null);
+	}
+
+	// An authenticated request answered with no content.
+	private CompletableFuture<Void> execute(HttpMethod method, String path, @Nullable Map<String, ?> json) {
+		return ContextualFuture.of(call(method, path, json, true).<Void>mapEmpty());
+	}
+
+	// An authenticated request answered with a list.
+	private <T> CompletableFuture<List<T>> fetchList(String path, Class<T> type) {
+		return ContextualFuture.of(call(HttpMethod.GET, path, null, true)
+				.compose(res -> res.jsonList(type)));
 	}
 
 	// A proof-of-work challenge, as issued by the Director.
