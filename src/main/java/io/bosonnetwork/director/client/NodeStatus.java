@@ -164,6 +164,18 @@ public class NodeStatus {
 		return services;
 	}
 
+	/**
+	 * Returns the first service the node offers with a service id, such as {@link Service#ION_STORE}.
+	 * This is how a client finds a service's peer id and endpoint without configuring them.
+	 *
+	 * @param serviceId the service id
+	 * @return the service, or an empty {@link Optional} if the node does not offer it
+	 */
+	public Optional<Service> getService(String serviceId) {
+		Objects.requireNonNull(serviceId, "serviceId");
+		return services.stream().filter(s -> s.getServiceId().equals(serviceId)).findFirst();
+	}
+
 	@Override
 	public String toString() {
 		return "NodeStatus{nodeId=" + nodeId + ", name=" + name + ", version=" + version +
@@ -174,6 +186,15 @@ public class NodeStatus {
 	 * A service offered by a super node. Immutable.
 	 */
 	public static class Service {
+		/** The service id of the Ion Store: an {@code http(s)} endpoint. */
+		public static final String ION_STORE = "io.bosonnetwork.ionstore";
+		/** The service id of the Web Gateway, which Higgs nodes use: an {@code http(s)} endpoint. */
+		public static final String WEB_GATEWAY = "io.bosonnetwork.webgateway";
+		/** The service id of the Active Proxy: a {@code tcp://host:port} endpoint. */
+		public static final String ACTIVE_PROXY = "io.bosonnetwork.activeproxy";
+		/** The service id of Photon messaging: an {@code mqtt(s)} endpoint. */
+		public static final String PHOTON_MESSAGING = "io.bosonnetwork.photonmessaging";
+
 		private final String serviceId;
 		private final @Nullable String serviceName;
 		private final Id peerId;
