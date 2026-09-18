@@ -147,6 +147,12 @@ public class DirectorClientTests {
 			assertThrows(IllegalArgumentException.class, () -> client.updateAvatar(new byte[] { 1 }, "image/gif"));
 			assertThrows(IllegalArgumentException.class, () -> client.updateAvatar(Path.of("avatar.gif")));
 			assertThrows(NullPointerException.class, () -> client.removeDevice(null));
+			assertThrows(NullPointerException.class, () -> client.getUserProfile(null));
+			assertThrows(NullPointerException.class, () -> client.getUserAvatar(null));
+			assertThrows(IllegalArgumentException.class, () -> client.getDeviceRegistration(""));
+			assertThrows(IllegalArgumentException.class, () -> client.denyDeviceRegistration(""));
+			assertThrows(IllegalArgumentException.class,
+					() -> client.approveDeviceRegistration("registration", new byte[0], null));
 		} finally {
 			client.close().get(10, TimeUnit.SECONDS);
 		}

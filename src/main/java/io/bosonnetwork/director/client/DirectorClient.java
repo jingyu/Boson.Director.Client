@@ -64,8 +64,10 @@ import io.bosonnetwork.vertx.ContextualFuture;
  * super node.
  * <p>
  * It covers what an app needs to manage its account on a super node: proof-of-work registration,
- * devices, the account passphrase, the profile and avatar, the node's identity and status, and the
- * user's plan. HTTP is an implementation detail: callers deal in {@link Id}s, keys and the model
+ * devices and approving new ones, the account passphrase, the profile and avatar, other users' public
+ * profiles and avatars, the node's identity and status, and the user's plan. What comes before the app
+ * holds a key to act with - OAuth sign-in and joining an account from a new device - is
+ * {@link DirectorAuth}. HTTP is an implementation detail: callers deal in {@link Id}s, keys and the model
  * types of this package, and every call returns a {@link CompletableFuture}.
  *
  * <h2>Identity and authentication</h2>
@@ -483,6 +485,80 @@ public class DirectorClient {
 		return execute(HttpMethod.POST, "/devices/" + deviceId.toBase58String() + "/remove", body);
 	}
 
+	/**
+	 * Reads a pending request from a new device to join the user's account, so that the user can see
+	 * what they are about to approve. The new device made the request with
+	 * {@link DirectorAuth#requestDeviceRegistration(Signature.KeyPair, String, String)} and passed its
+	 * id to this device, typically in a QR code.
+	 *
+	 * @param registrationId the id of the registration request
+	 * @return a future completing with the device asking to join; it fails with
+	 *         {@link NotFoundException} if there is no such pending request, or it has expired
+	 */
+	public CompletableFuture<PendingDevice> getDeviceRegistration(String registrationId) {
+		checkOpen();
+		checkRegistrationId(registrationId);
+		return ContextualFuture.of(call(HttpMethod.GET, registrationPath(registrationId), null, true)
+				.compose(res -> res.json(PendingDevice.class)));
+	}
+
+	/**
+	 * Approves a pending request from a new device to join the user's account: the Director registers
+	 * the device to the user, and hands it the user key given here.
+	 * <p>
+	 * The Director relays the key without reading it, so seal it to the new device first - for instance
+	 * to a key the new device showed alongside the registration id. The new device receives it, as sent,
+	 * from {@link DirectorAuth#finishDeviceRegistration(Signature.KeyPair, String)}.
+	 *
+	 * @param registrationId the id of the registration request
+	 * @param userKey the user key for the new device, as it should receive it
+	 * @param passphrase the account passphrase, or {@code null} if the account has none
+	 * @return a future completing when the request is approved; it fails with {@link NotFoundException}
+	 *         if there is no such pending request
+	 * @throws IllegalArgumentException if the user key is empty
+	 */
+	public CompletableFuture<Void> approveDeviceRegistration(String registrationId, byte[] userKey,
+			@Nullable String passphrase) {
+		checkOpen();
+		checkRegistrationId(registrationId);
+		Objects.requireNonNull(userKey, "userKey");
+		if (userKey.length == 0)
+			throw new IllegalArgumentException("The user key is empty");
+
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		body.put("approved", true);
+		body.put("userPrivateKey", userKey);
+		putIfNotNull(body, "passphrase", passphrase);
+		return execute(HttpMethod.PATCH, registrationPath(registrationId), body);
+	}
+
+	/**
+	 * Denies a pending request from a new device to join the user's account. The new device learns of
+	 * it from {@link DirectorAuth#finishDeviceRegistration(Signature.KeyPair, String)}.
+	 *
+	 * @param registrationId the id of the registration request
+	 * @return a future completing when the request is denied; it fails with {@link NotFoundException}
+	 *         if there is no such pending request
+	 */
+	public CompletableFuture<Void> denyDeviceRegistration(String registrationId) {
+		checkOpen();
+		checkRegistrationId(registrationId);
+
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		body.put("approved", false);
+		return execute(HttpMethod.PATCH, registrationPath(registrationId), body);
+	}
+
+	static String registrationPath(String registrationId) {
+		return "/devices/registrations/" + DirectorTransport.encode(registrationId);
+	}
+
+	static void checkRegistrationId(String registrationId) {
+		Objects.requireNonNull(registrationId, "registrationId");
+		if (registrationId.isEmpty())
+			throw new IllegalArgumentException("registrationId is empty");
+	}
+
 	// ---- Passphrase ----------------------------------------------------------------------------
 
 	/**
@@ -587,6 +663,24 @@ public class DirectorClient {
 		return execute(HttpMethod.PUT, "/profile", body);
 	}
 
+	/**
+	 * Gets the public profile of any user: of this node, or of another super node, which the Director
+	 * then asks on this client's behalf.
+	 *
+	 * @param userId the id of the user
+	 * @return a future completing with the user's public profile, or with {@code null} if no such user
+	 *         is known
+	 */
+	public CompletableFuture<@Nullable UserProfile> getUserProfile(Id userId) {
+		checkOpen();
+		Objects.requireNonNull(userId, "userId");
+		// Authenticated: the Director resolves a user of another node only for a user of its own.
+		Future<@Nullable UserProfile> profile = call(HttpMethod.GET, "/profile/" + userId.toBase58String(), null, true)
+				.<@Nullable UserProfile>compose(res -> res.json(UserProfile.class))
+				.recover(DirectorClient::nullIfNotFound);
+		return ContextualFuture.of(profile);
+	}
+
 	private Future<Profile> fetchProfile() {
 		return call(HttpMethod.GET, "/profile", null, true)
 				.compose(res -> res.json(Profile.class));
@@ -637,14 +731,45 @@ public class DirectorClient {
 	 */
 	public CompletableFuture<@Nullable Avatar> getAvatar() {
 		checkOpen();
-		Future<@Nullable Avatar> avatar = call(HttpMethod.GET, "/avatar", null, true)
+		return ContextualFuture.of(fetchAvatar("/avatar"));
+	}
+
+	/**
+	 * Downloads the avatar of any user: of this node, or of another super node, which the Director then
+	 * fetches on this client's behalf.
+	 *
+	 * @param userId the id of the user
+	 * @return a future completing with the avatar, or with {@code null} if the user has none or is not
+	 *         known
+	 */
+	public CompletableFuture<@Nullable Avatar> getUserAvatar(Id userId) {
+		checkOpen();
+		Objects.requireNonNull(userId, "userId");
+		return ContextualFuture.of(fetchAvatar("/avatar/" + userId.toBase58String()));
+	}
+
+	/**
+	 * Removes the user's avatar. Succeeds without effect if the user has none.
+	 *
+	 * @return a future completing when the avatar is removed
+	 */
+	public CompletableFuture<Void> removeAvatar() {
+		checkOpen();
+		// The Director answers 404 when there is no avatar to remove: already the state asked for.
+		return ContextualFuture.of(call(HttpMethod.DELETE, "/avatar", null, true)
+				.<Void>mapEmpty()
+				.recover(e -> e instanceof NotFoundException ? Future.succeededFuture() : Future.failedFuture(e)));
+	}
+
+	// Authenticated even for another user's avatar: the Director fetches one from another node only for a
+	// user of its own.
+	private Future<@Nullable Avatar> fetchAvatar(String path) {
+		return call(HttpMethod.GET, path, null, true)
 				.<@Nullable Avatar>map(res -> {
 					String type = res.getHeader("Content-Type");
 					return new Avatar(type != null ? type : "application/octet-stream", res.body().getBytes());
 				})
-				.recover(e -> e instanceof NotFoundException ? 
-						Future.<@Nullable Avatar>succeededFuture(null) : Future.<@Nullable Avatar>failedFuture(e));
-		return ContextualFuture.of(avatar);
+				.recover(DirectorClient::nullIfNotFound);
 	}
 
 	private Future<String> uploadAvatar(Buffer image, String contentType) {
@@ -780,6 +905,10 @@ public class DirectorClient {
 
 	private void checkOpen() {
 		transport.checkOpen();
+	}
+
+	private static <T> Future<@Nullable T> nullIfNotFound(Throwable e) {
+		return e instanceof NotFoundException ? Future.<@Nullable T>succeededFuture(null) : Future.<@Nullable T>failedFuture(e);
 	}
 
 	private static void checkPassphrase(String passphrase, String name) {

@@ -66,7 +66,7 @@ import io.bosonnetwork.web.PaginatedResult;
  */
 final class DirectorTransport {
 	// Every Director API lives under this path of the Director URL.
-	private static final String API_VERSION_PREFIX = "/api/v1";
+	static final String API_VERSION_PREFIX = "/api/v1";
 
 	// Seconds an idle connection may be reused from the pool. Kept short for the same reason as in
 	// the Ion Store client: mobile platforms and NAT gateways silently drop idle connections, and a
@@ -177,6 +177,14 @@ final class DirectorTransport {
 	// incremental build - would see Map<String, Object> and fail NullAway, while a full build passes.
 	Future<Response> call(HttpMethod method, String path,
 			@Nullable Map<String, ?> json, @Nullable TokenSource tokens) {
+		return call(method, path, json, tokens, 0);
+	}
+
+	// As above, with the time the request may go without a byte in either direction before it fails, in
+	// milliseconds; 0 for the connection's own idle timeout. Only a call the Director deliberately holds
+	// open - a long poll - needs more.
+	Future<Response> call(HttpMethod method, String path,
+			@Nullable Map<String, ?> json, @Nullable TokenSource tokens, long idleTimeout) {
 		Buffer body = null;
 		if (json != null) {
 			try {
@@ -187,7 +195,7 @@ final class DirectorTransport {
 			}
 		}
 
-		return call(method, path, body, body != null ? CONTENT_TYPE_JSON : null, tokens);
+		return call(method, path, body, body != null ? CONTENT_TYPE_JSON : null, tokens, idleTimeout);
 	}
 
 	// Sends a request to the API and fails the result on any non-2xx answer. A request with no token
@@ -195,17 +203,22 @@ final class DirectorTransport {
 	// one is a method that names its path and decodes its answer.
 	Future<Response> call(HttpMethod method, String path, @Nullable Buffer body,
 			@Nullable String contentType, @Nullable TokenSource tokens) {
+		return call(method, path, body, contentType, tokens, 0);
+	}
+
+	private Future<Response> call(HttpMethod method, String path, @Nullable Buffer body,
+			@Nullable String contentType, @Nullable TokenSource tokens, long idleTimeout) {
 		Future<Response> response;
 		if (tokens == null) {
-			response = send(method, path, body, contentType, null);
+			response = send(method, path, body, contentType, null, idleTimeout);
 		} else {
 			TokenSource source = tokens;
-			response = source.token().compose(t -> send(method, path, body, contentType, t).compose(res -> {
+			response = source.token().compose(t -> send(method, path, body, contentType, t, idleTimeout).compose(res -> {
 				if (res.statusCode() != 401 || !source.rejected(t, res))
 					return Future.succeededFuture(res);
 
 				// Rejected before it was acted on, and the token source can do better: repeat once.
-				return source.token().compose(fresh -> send(method, path, body, contentType, fresh));
+				return source.token().compose(fresh -> send(method, path, body, contentType, fresh, idleTimeout));
 			}));
 		}
 
@@ -214,10 +227,12 @@ final class DirectorTransport {
 	}
 
 	private Future<Response> send(HttpMethod method, String path, @Nullable Buffer body,
-			@Nullable String contentType, @Nullable String accessToken) {
+			@Nullable String contentType, @Nullable String accessToken, long idleTimeout) {
 		RequestOptions request = new RequestOptions()
 				.setMethod(method)
 				.setURI(basePath + path);
+		if (idleTimeout > 0)
+			request.setIdleTimeout(idleTimeout);
 		// The host - and with it the Host header, SNI and the certificate check - stays the URL's; only
 		// the connection goes elsewhere. Named explicitly, since Vert.x otherwise takes it from the server.
 		if (server != null)
