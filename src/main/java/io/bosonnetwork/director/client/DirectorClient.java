@@ -38,6 +38,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
 import io.vertx.core.Future;
+import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpMethod;
@@ -749,6 +750,36 @@ public class DirectorClient {
 	}
 
 	/**
+	 * Downloads the avatar of any user unless it is unchanged since a copy the caller holds - the way an
+	 * image cache keeps avatars current without downloading them every time. The Director is asked
+	 * whether {@code cached} is still the avatar, by the validators it was downloaded with, and sends the
+	 * image only if it is not.
+	 *
+	 * @param userId the id of the user
+	 * @param cached the copy the caller holds, as returned by an earlier download or restored with
+	 *        {@link Avatar#of(String, byte[], String, String)}; {@code null} to download unconditionally
+	 * @return a future completing with {@code cached} itself if it is still the avatar, with the new
+	 *         avatar if it changed, or with {@code null} if the user has none any more or is not known
+	 */
+	public CompletableFuture<@Nullable Avatar> getUserAvatar(Id userId, @Nullable Avatar cached) {
+		checkOpen();
+		Objects.requireNonNull(userId, "userId");
+		String path = "/avatar/" + userId.toBase58String();
+		if (cached == null || !cached.isRevalidatable())
+			return ContextualFuture.of(fetchAvatar(path));
+
+		MultiMap conditions = MultiMap.caseInsensitiveMultiMap();
+		cached.getETag().ifPresent(tag -> conditions.set("If-None-Match", tag));
+		cached.getLastModified().ifPresent(time -> conditions.set("If-Modified-Since", time));
+		// Authenticated for the reason given in fetchAvatar.
+		Future<@Nullable Avatar> avatar = transport.conditionalGet(path, conditions, tokens)
+				.<@Nullable Avatar>map(res -> res.statusCode() == DirectorTransport.NOT_MODIFIED ?
+						cached : avatarOf(res))
+				.recover(DirectorClient::nullIfNotFound);
+		return ContextualFuture.of(avatar);
+	}
+
+	/**
 	 * Removes the user's avatar. Succeeds without effect if the user has none.
 	 *
 	 * @return a future completing when the avatar is removed
@@ -765,11 +796,14 @@ public class DirectorClient {
 	// user of its own.
 	private Future<@Nullable Avatar> fetchAvatar(String path) {
 		return call(HttpMethod.GET, path, null, true)
-				.<@Nullable Avatar>map(res -> {
-					String type = res.getHeader("Content-Type");
-					return new Avatar(type != null ? type : "application/octet-stream", res.body().getBytes());
-				})
+				.<@Nullable Avatar>map(DirectorClient::avatarOf)
 				.recover(DirectorClient::nullIfNotFound);
+	}
+
+	private static Avatar avatarOf(DirectorTransport.Response res) {
+		String type = res.getHeader("Content-Type");
+		return new Avatar(type != null ? type : "application/octet-stream", res.body().getBytes(),
+				res.getHeader("ETag"), res.getHeader("Last-Modified"));
 	}
 
 	private Future<String> uploadAvatar(Buffer image, String contentType) {

@@ -73,7 +73,15 @@ final class DirectorTransport {
 	// dropped pooled connection is indistinguishable from a live one until a request fails on it.
 	private static final int KEEP_ALIVE_TIMEOUT = 20;
 
+	// Milliseconds a request may go without a byte in either direction before it fails: how a connection
+	// that died mid-request is noticed. Per request, not per connection: a connection idle timeout also
+	// closes a connection that is busy with a request the Director deliberately holds open - a long poll -
+	// and pooled connections are already retired by the keep-alive timeout above.
+	private static final long REQUEST_IDLE_TIMEOUT = TimeUnit.SECONDS.toMillis(60);
+
 	private static final String CONTENT_TYPE_JSON = "application/json";
+
+	static final int NOT_MODIFIED = 304;
 
 	/**
 	 * Supplies the access tokens a transport authenticates its requests with.
@@ -133,8 +141,6 @@ final class DirectorTransport {
 		options.setKeepAlive(true);
 		options.setKeepAliveTimeout(KEEP_ALIVE_TIMEOUT);
 		options.setConnectTimeout(10_000);
-		options.setIdleTimeout(60);
-		options.setIdleTimeoutUnit(TimeUnit.SECONDS);
 		// The Director never redirects an API call. Follow no redirect, rather than repeat the request -
 		// bearer token included - to wherever it points: a 3xx comes back as a response, and the status
 		// check fails it. Set on the client rather than per request, so that no request can opt back in.
@@ -181,7 +187,7 @@ final class DirectorTransport {
 	}
 
 	// As above, with the time the request may go without a byte in either direction before it fails, in
-	// milliseconds; 0 for the connection's own idle timeout. Only a call the Director deliberately holds
+	// milliseconds; 0 for the default, REQUEST_IDLE_TIMEOUT. Only a call the Director deliberately holds
 	// open - a long poll - needs more.
 	Future<Response> call(HttpMethod method, String path,
 			@Nullable Map<String, ?> json, @Nullable TokenSource tokens, long idleTimeout) {
@@ -195,7 +201,7 @@ final class DirectorTransport {
 			}
 		}
 
-		return call(method, path, body, body != null ? CONTENT_TYPE_JSON : null, tokens, idleTimeout);
+		return call(method, path, body, body != null ? CONTENT_TYPE_JSON : null, tokens, idleTimeout, null);
 	}
 
 	// Sends a request to the API and fails the result on any non-2xx answer. A request with no token
@@ -203,36 +209,46 @@ final class DirectorTransport {
 	// one is a method that names its path and decodes its answer.
 	Future<Response> call(HttpMethod method, String path, @Nullable Buffer body,
 			@Nullable String contentType, @Nullable TokenSource tokens) {
-		return call(method, path, body, contentType, tokens, 0);
+		return call(method, path, body, contentType, tokens, 0, null);
+	}
+
+	// A conditional GET: asks for a resource the caller holds a copy of, sending that copy's validators
+	// (If-None-Match, If-Modified-Since). A 304 answer succeeds like a 2xx - the copy is current.
+	Future<Response> conditionalGet(String path, MultiMap conditions, @Nullable TokenSource tokens) {
+		return call(HttpMethod.GET, path, null, null, tokens, 0, conditions);
 	}
 
 	private Future<Response> call(HttpMethod method, String path, @Nullable Buffer body,
-			@Nullable String contentType, @Nullable TokenSource tokens, long idleTimeout) {
+			@Nullable String contentType, @Nullable TokenSource tokens, long idleTimeout,
+			@Nullable MultiMap conditions) {
 		Future<Response> response;
 		if (tokens == null) {
-			response = send(method, path, body, contentType, null, idleTimeout);
+			response = send(method, path, body, contentType, null, idleTimeout, conditions);
 		} else {
 			TokenSource source = tokens;
-			response = source.token().compose(t -> send(method, path, body, contentType, t, idleTimeout).compose(res -> {
-				if (res.statusCode() != 401 || !source.rejected(t, res))
-					return Future.succeededFuture(res);
+			response = source.token().compose(t -> send(method, path, body, contentType, t, idleTimeout, conditions)
+					.compose(res -> {
+						if (res.statusCode() != 401 || !source.rejected(t, res))
+							return Future.succeededFuture(res);
 
-				// Rejected before it was acted on, and the token source can do better: repeat once.
-				return source.token().compose(fresh -> send(method, path, body, contentType, fresh, idleTimeout));
-			}));
+						// Rejected before it was acted on, and the token source can do better: repeat once.
+						return source.token().compose(fresh ->
+								send(method, path, body, contentType, fresh, idleTimeout, conditions));
+					}));
 		}
 
-		return response.compose(res -> checkStatus(method, path, res))
+		boolean conditional = conditions != null && !conditions.isEmpty();
+		return response.compose(res -> checkStatus(method, path, res, conditional))
 				.recover(this::wrapError);
 	}
 
 	private Future<Response> send(HttpMethod method, String path, @Nullable Buffer body,
-			@Nullable String contentType, @Nullable String accessToken, long idleTimeout) {
+			@Nullable String contentType, @Nullable String accessToken, long idleTimeout,
+			@Nullable MultiMap conditions) {
 		RequestOptions request = new RequestOptions()
 				.setMethod(method)
 				.setURI(basePath + path);
-		if (idleTimeout > 0)
-			request.setIdleTimeout(idleTimeout);
+		request.setIdleTimeout(idleTimeout > 0 ? idleTimeout : REQUEST_IDLE_TIMEOUT);
 		// The host - and with it the Host header, SNI and the certificate check - stays the URL's; only
 		// the connection goes elsewhere. Named explicitly, since Vert.x otherwise takes it from the server.
 		if (server != null)
@@ -241,6 +257,8 @@ final class DirectorTransport {
 			request.putHeader("Authorization", "Bearer " + accessToken);
 		if (body != null && contentType != null)
 			request.putHeader("Content-Type", contentType);
+		if (conditions != null)
+			conditions.forEach(request::putHeader);
 
 		// The body is read whatever the status: an error's explanation is in it, and a response left
 		// unread would keep its connection out of the pool.
@@ -249,9 +267,9 @@ final class DirectorTransport {
 				.compose(res -> res.body().map(content -> new Response(res.statusCode(), res.headers(), content)));
 	}
 
-	private Future<Response> checkStatus(HttpMethod method, String path, Response response) {
+	private Future<Response> checkStatus(HttpMethod method, String path, Response response, boolean conditional) {
 		int status = response.statusCode();
-		if (status >= 200 && status < 300)
+		if ((status >= 200 && status < 300) || (conditional && status == NOT_MODIFIED))
 			return Future.succeededFuture(response);
 
 		DirectorException error = DirectorException.fromResponse(status, response.bodyAsString(),

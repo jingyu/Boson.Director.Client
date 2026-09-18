@@ -11,11 +11,21 @@ tokens or wire encodings.
 |---|---|
 | Registration | `registerUser` - proof-of-work registration, optionally with an initial device |
 | Devices | `registerDevice`, `listDevices`, `removeDevice` |
+| New devices | `getDeviceRegistration`, `approveDeviceRegistration`, `denyDeviceRegistration` - answer a device asking to join the account |
 | Passphrase | `setPassphrase`, `updatePassphrase`, `clearPassphrase` |
 | Profile | `getProfile`, `updateProfile` |
-| Avatar | `updateAvatar` (bytes or file), `getAvatar` |
+| Avatar | `updateAvatar` (bytes or file), `getAvatar`, `removeAvatar` |
+| Other users | `getUserProfile`, `getUserAvatar` - of this node or another super node; `getUserAvatar(id, cached)` downloads only when the held copy has changed |
 | Node | `getNodeId`, `getNodeStatus` |
 | Plan | `getPlan` - the plan name, its catalog entry and the active subscription |
+
+`DirectorAuth` covers what comes before an app holds a key to act with:
+
+| Area | Calls |
+|---|---|
+| Sign-up | `isProofOfWorkRegistrationEnabled`, `getProviders` |
+| OAuth | `authorizeUrl`, `getSession`, `bindUserIdentity` - bind a Boson identity to an OAuth sign-in |
+| Joining an account | `requestDeviceRegistration`, `finishDeviceRegistration` - a new device, approved from one already registered |
 
 Every call returns a `CompletableFuture` that completes on the caller's Vert.x context: a call made
 on a Vert.x context completes on that context, and so do the continuations chained on it. A Vert.x
