@@ -32,9 +32,9 @@ import io.bosonnetwork.Id;
 
 /**
  * A device asking to join a user's account, as an approving device sees it with
- * {@link DirectorClient#getDeviceRegistration(String)}. Immutable.
+ * {@link DirectorClient#getDeviceRegistration(PairingCode)}. Immutable.
  *
- * @see DirectorAuth#requestDeviceRegistration(io.bosonnetwork.crypto.Signature.KeyPair, String, String)
+ * @see DirectorGuest#requestDeviceRegistration(io.bosonnetwork.crypto.Signature.KeyPair, String, String)
  */
 public class PendingDevice {
 	private final Id deviceId;

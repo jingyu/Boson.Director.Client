@@ -32,12 +32,15 @@ import org.jspecify.annotations.Nullable;
 import io.bosonnetwork.Id;
 
 /**
- * The public profile of any user, as returned by {@link DirectorClient#getUserProfile(Id)}: what the
- * user shows to others, without the private parts of the account. Immutable.
+ * The public profile of any user, as a Director reports it with {@link DirectorClient#getUserProfile(Id)}:
+ * what the user shows to others, without the private parts of the account ({@link Profile}). Immutable.
  * <p>
  * A user of another super node is resolved through that node, and carries the node it lives on.
+ * <p>
+ * This is the Director's view, as it answers: unlike {@link io.bosonnetwork.UserProfile}, which is backed
+ * by a card the user signed, nothing here is signed by the user.
  */
-public class UserProfile {
+public class PublicProfile {
 	private final Id id;
 	private final @Nullable String name;
 	private final @Nullable String avatar;
@@ -46,7 +49,7 @@ public class UserProfile {
 	private final @Nullable Id messagingHomePeer;
 
 	@JsonCreator
-	UserProfile(@JsonProperty(value = "id", required = true) Id id,
+	PublicProfile(@JsonProperty(value = "id", required = true) Id id,
 			@JsonProperty("name") @Nullable String name,
 			@JsonProperty("avatar") @Nullable String avatar,
 			@JsonProperty("bio") @Nullable String bio,
@@ -117,6 +120,6 @@ public class UserProfile {
 
 	@Override
 	public String toString() {
-		return "UserProfile{id=" + id + ", name=" + name + ", homeNode=" + homeNode + "}";
+		return "PublicProfile{id=" + id + ", name=" + name + ", homeNode=" + homeNode + "}";
 	}
 }

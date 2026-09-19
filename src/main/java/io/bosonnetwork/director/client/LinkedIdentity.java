@@ -32,43 +32,37 @@ import org.jspecify.annotations.Nullable;
 import io.bosonnetwork.Id;
 
 /**
- * An OAuth sign-in session, as {@link DirectorOAuth#getSession()} reports it: who the provider
- * says signed in, and the Boson user bound to the session, if any yet. Immutable.
+ * An OAuth sign-in linked to a user's account, as listed by {@link DirectorOAuth#listIdentities()}: one
+ * provider account through which the user signs in. Immutable.
  */
-public class AuthSession {
+public class LinkedIdentity {
 	private final Id sessionId;
-	private final @Nullable Id userId;
+	private final @Nullable String provider;
 	private final @Nullable String name;
 	private final @Nullable String email;
 	private final boolean emailVerified;
 	private final @Nullable String avatar;
-	private final @Nullable String provider;
-	private final boolean admin;
 	private final long createdAt;
 
 	@JsonCreator
-	AuthSession(@JsonProperty(value = "sessionId", required = true) Id sessionId,
-			@JsonProperty("userId") @Nullable Id userId,
+	LinkedIdentity(@JsonProperty(value = "sessionId", required = true) Id sessionId,
+			@JsonProperty("provider") @Nullable String provider,
 			@JsonProperty("name") @Nullable String name,
 			@JsonProperty("email") @Nullable String email,
 			@JsonProperty("emailVerified") boolean emailVerified,
 			@JsonProperty("avatar") @Nullable String avatar,
-			@JsonProperty("provider") @Nullable String provider,
-			@JsonProperty("admin") boolean admin,
 			@JsonProperty("createdAt") long createdAt) {
 		this.sessionId = Objects.requireNonNull(sessionId, "sessionId");
-		this.userId = userId;
+		this.provider = provider;
 		this.name = name;
 		this.email = email;
 		this.emailVerified = emailVerified;
 		this.avatar = avatar;
-		this.provider = provider;
-		this.admin = admin;
 		this.createdAt = createdAt;
 	}
 
 	/**
-	 * Returns the session id.
+	 * Returns the id of the sign-in, which {@link DirectorOAuth#disconnectIdentity(Id)} takes.
 	 *
 	 * @return the session id
 	 */
@@ -77,13 +71,12 @@ public class AuthSession {
 	}
 
 	/**
-	 * Returns the Boson user bound to the session. A session starts unbound; see
-	 * {@link DirectorOAuth#bindUserIdentity(io.bosonnetwork.crypto.Signature.KeyPair)}.
+	 * Returns the id of the provider.
 	 *
-	 * @return the user id, or empty if no user is bound yet
+	 * @return the provider id, or empty if the Director did not report it
 	 */
-	public Optional<Id> getUserId() {
-		return Optional.ofNullable(userId);
+	public Optional<String> getProvider() {
+		return Optional.ofNullable(provider);
 	}
 
 	/**
@@ -123,25 +116,7 @@ public class AuthSession {
 	}
 
 	/**
-	 * Returns the id of the provider the user signed in with.
-	 *
-	 * @return the provider id, or empty if the Director did not report it
-	 */
-	public Optional<String> getProvider() {
-		return Optional.ofNullable(provider);
-	}
-
-	/**
-	 * Tells whether the bound user is an administrator of the node.
-	 *
-	 * @return {@code true} if the bound user is an administrator
-	 */
-	public boolean isAdmin() {
-		return admin;
-	}
-
-	/**
-	 * Returns when the session was created.
+	 * Returns when the sign-in was first linked.
 	 *
 	 * @return the creation time, in epoch milliseconds
 	 */
@@ -151,6 +126,6 @@ public class AuthSession {
 
 	@Override
 	public String toString() {
-		return "AuthSession{sessionId=" + sessionId + ", userId=" + userId + ", provider=" + provider + "}";
+		return "LinkedIdentity{sessionId=" + sessionId + ", provider=" + provider + "}";
 	}
 }

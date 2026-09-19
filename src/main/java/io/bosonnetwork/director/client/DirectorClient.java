@@ -35,6 +35,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 import io.vertx.core.Future;
@@ -49,16 +50,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.bosonnetwork.Id;
+import io.bosonnetwork.crypto.CryptoBox;
 import io.bosonnetwork.crypto.CryptoIdentity;
 import io.bosonnetwork.crypto.Random;
 import io.bosonnetwork.crypto.Signature;
 import io.bosonnetwork.crypto.pow.RegistrationPowClient;
 import io.bosonnetwork.director.client.exceptions.DirectorException;
 import io.bosonnetwork.director.client.exceptions.NotFoundException;
+import io.bosonnetwork.director.client.exceptions.ProofOfWorkException;
 import io.bosonnetwork.director.client.exceptions.RegistrationDisabledException;
 import io.bosonnetwork.json.Json;
 import io.bosonnetwork.service.AccessScope;
-import io.bosonnetwork.vertx.ContextualFuture;
+import io.bosonnetwork.web.PaginatedResult;
 
 /**
  * An asynchronous client for the client API of a Boson Director, the account service of a Boson
@@ -68,7 +71,7 @@ import io.bosonnetwork.vertx.ContextualFuture;
  * devices and approving new ones, the account passphrase, the profile and avatar, other users' public
  * profiles and avatars, the node's identity and status, and the user's plan. What comes before the app
  * holds a key to act with - OAuth sign-in and joining an account from a new device - is
- * {@link DirectorAuth}. HTTP is an implementation detail: callers deal in {@link Id}s, keys and the model
+ * {@link DirectorGuest}, and an OAuth sign-in in progress is a {@link DirectorOAuth}. HTTP is an implementation detail: callers deal in {@link Id}s, keys and the model
  * types of this package, and every call returns a {@link CompletableFuture}.
  *
  * <h2>Identity and authentication</h2>
@@ -119,10 +122,13 @@ import io.bosonnetwork.vertx.ContextualFuture;
  * <h2>Threading</h2>
  * The client is thread-safe. A call made on a Vert.x context completes on that context, and so do
  * the continuations chained on the returned {@link CompletableFuture}. A call made from any other
- * thread completes on a Vert.x event loop; such a caller may block on the returned future, which
+ * thread completes on a Vert.x event loop, unless the builder was given a
+ * {@linkplain DirectorBuilder#callbackExecutor(java.util.concurrent.Executor) callback executor}, which
+ * such an app should do if its continuations may block. A caller may block on the returned future, which
  * must never be done on an event loop. A Vert.x caller can turn a returned future back into a
- * {@link io.vertx.core.Future} with {@code Future.fromCompletionStage}. Cancellation is not
- * supported: {@code cancel()} returns {@code false} and never stops a call in flight. Call
+ * {@link io.vertx.core.Future} with {@code Future.fromCompletionStage}. The futures follow the
+ * CompletableFuture contract: {@code cancel()}, {@code complete()} and the timeouts complete the future,
+ * though the call in flight is not stopped and its result is then ignored. Call
  * {@link #close()} when done with the client.
  *
  * <p>Example:
@@ -183,7 +189,7 @@ public class DirectorClient {
 		this.deviceKey = builder.deviceKey;
 		this.deviceId = deviceKey != null ? Id.of(deviceKey.publicKey().bytes()) : null;
 
-		this.transport = new DirectorTransport(vertx, directorUrl, CLIENT_API, nodeId, builder.resolveToAddress, log);
+		this.transport = new DirectorTransport(vertx, directorUrl, CLIENT_API, nodeId, builder.resolveToAddress, builder.callbackExecutor, log);
 
 		// Tokens are signed with the user key when the client has it: that works before any device is
 		// registered. A device signs its own, naming itself as the client.
@@ -235,7 +241,7 @@ public class DirectorClient {
 	 * @return a future completing when the client is closed
 	 */
 	public CompletableFuture<Void> close() {
-		return ContextualFuture.of(transport.close());
+		return transport.deliver(transport.close());
 	}
 
 	/**
@@ -256,7 +262,7 @@ public class DirectorClient {
 	 */
 	public CompletableFuture<Id> getNodeId() {
 		checkOpen();
-		return ContextualFuture.of(fetchNodeId());
+		return transport.deliver(fetchNodeId());
 	}
 
 	/**
@@ -267,7 +273,7 @@ public class DirectorClient {
 	 */
 	public CompletableFuture<NodeStatus> getNodeStatus() {
 		checkOpen();
-		return ContextualFuture.of(call(HttpMethod.GET, "/node", null, false)
+		return transport.deliver(call(HttpMethod.GET, "/node", null, false)
 				.compose(res -> res.json(NodeStatus.class)));
 	}
 
@@ -310,7 +316,8 @@ public class DirectorClient {
 	 * @param registration the account details to register with
 	 * @return a future completing when the user is registered; it fails with a
 	 *         {@link io.bosonnetwork.director.client.exceptions.ConflictException} if the user (or the
-	 *         initial device) is already registered
+	 *         initial device) is already registered, or with {@link ProofOfWorkException} if no solution
+	 *         was found
 	 * @throws IllegalStateException if the client has no user key, or the registration names an
 	 *         initial device and the client has no device key
 	 */
@@ -330,7 +337,7 @@ public class DirectorClient {
 		}
 		final Signature.KeyPair initialDeviceKey = dk;
 
-		return ContextualFuture.of(resolveNodeId().compose(nid -> fetchChallenge().compose(challenge ->
+		return transport.deliver(resolveNodeId().compose(nid -> fetchChallenge().compose(challenge ->
 				solve(nid, uk, challenge).compose(solution ->
 						submitRegistration(registration, nid, uk, initialDeviceKey, challenge, solution)))));
 	}
@@ -348,7 +355,11 @@ public class DirectorClient {
 		// Memory-hard by design: never on an event loop. Unordered, so that concurrent registrations
 		// do not queue behind each other.
 		return vertx.executeBlocking(() -> RegistrationPowClient.solve(nid.bytesUnsafe(), uk,
-				challenge.n, challenge.k, challenge.effort, challenge.nonce, MAX_POW_NONCES), false);
+				challenge.n, challenge.k, challenge.effort, challenge.nonce, MAX_POW_NONCES), false)
+				// The solver gives up with an IllegalStateException, which callers would take for a
+				// precondition of the client (closed, no key); type it for what it is.
+				.recover(e -> Future.failedFuture(e instanceof IllegalStateException ?
+						new ProofOfWorkException("No proof-of-work solution found; register again to solve a fresh challenge", e) : e));
 	}
 
 	private Future<Void> submitRegistration(UserRegistration registration, Id nid, Signature.KeyPair uk,
@@ -379,6 +390,30 @@ public class DirectorClient {
 		// The registration also answers with an access token for the new account, issued by the node;
 		// this client issues its own.
 		return call(HttpMethod.POST, path, body, false).mapEmpty();
+	}
+
+	/**
+	 * Deactivates the user's account: the Director removes the user and the user's devices. It cannot be
+	 * undone. The account must not be passphrase-protected; see {@link #deactivate(String)}.
+	 *
+	 * @return a future completing when the account is deactivated
+	 */
+	public CompletableFuture<Void> deactivate() {
+		return deactivate(null);
+	}
+
+	/**
+	 * Deactivates the user's account: the Director removes the user and the user's devices. It cannot be
+	 * undone. The client is still open afterwards, but the Director no longer knows the user.
+	 *
+	 * @param passphrase the account passphrase, or {@code null} if the account has none
+	 * @return a future completing when the account is deactivated
+	 */
+	public CompletableFuture<Void> deactivate(@Nullable String passphrase) {
+		checkOpen();
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		putIfNotNull(body, "passphrase", passphrase);
+		return execute(HttpMethod.POST, "/users/deactivate", body);
 	}
 
 	// ---- Devices -------------------------------------------------------------------------------
@@ -456,6 +491,18 @@ public class DirectorClient {
 	}
 
 	/**
+	 * Gets one of the user's devices.
+	 *
+	 * @param deviceId the id of the device
+	 * @return a future completing with the device, or empty if the user has no such device
+	 */
+	public CompletableFuture<Optional<Device>> getDevice(Id deviceId) {
+		checkOpen();
+		Objects.requireNonNull(deviceId, "deviceId");
+		return fetchOptional("/devices/" + deviceId.toBase58String(), Device.class);
+	}
+
+	/**
 	 * Removes a device from the user's account. The account must not be passphrase-protected; see
 	 * {@link #removeDevice(Id, String)}.
 	 *
@@ -487,77 +534,81 @@ public class DirectorClient {
 	}
 
 	/**
-	 * Reads a pending request from a new device to join the user's account, so that the user can see
-	 * what they are about to approve. The new device made the request with
-	 * {@link DirectorAuth#requestDeviceRegistration(Signature.KeyPair, String, String)} and passed its
-	 * id to this device, typically in a QR code.
+	 * Reads a pending request from a new device to join the user's account, so that the user can see what
+	 * they are about to approve. The new device made the request with
+	 * {@link DirectorGuest#requestDeviceRegistration(Signature.KeyPair, String, String)} and shows its
+	 * pairing code, typically as a QR code.
 	 *
-	 * @param registrationId the id of the registration request
-	 * @return a future completing with the device asking to join; it fails with
-	 *         {@link NotFoundException} if there is no such pending request, or it has expired
+	 * @param code the pairing code the new device shows
+	 * @return a future completing with the device asking to join, or empty if there is no such pending
+	 *         request (it was answered, or it expired)
 	 */
-	public CompletableFuture<PendingDevice> getDeviceRegistration(String registrationId) {
+	public CompletableFuture<Optional<PendingDevice>> getDeviceRegistration(PairingCode code) {
 		checkOpen();
-		checkRegistrationId(registrationId);
-		return ContextualFuture.of(call(HttpMethod.GET, registrationPath(registrationId), null, true)
-				.compose(res -> res.json(PendingDevice.class)));
+		Objects.requireNonNull(code, "code");
+		return transport.deliver(call(HttpMethod.GET, registrationPath(code.getRegistrationId()), null, true)
+				.compose(res -> res.json(PendingDevice.class))
+				.map(Optional::of)
+				.recover(DirectorClient::emptyIfNotFound));
 	}
 
 	/**
-	 * Approves a pending request from a new device to join the user's account: the Director registers
-	 * the device to the user, and hands it the user key given here.
-	 * <p>
-	 * The Director relays the key without reading it, so seal it to the new device first - for instance
-	 * to a key the new device showed alongside the registration id. The new device receives it, as sent,
-	 * from {@link DirectorAuth#finishDeviceRegistration(Signature.KeyPair, String)}.
+	 * Approves a pending request from a new device to join the user's account. The account must not be
+	 * passphrase-protected; see {@link #approveDeviceRegistration(PairingCode, String)}.
 	 *
-	 * @param registrationId the id of the registration request
-	 * @param userKey the user key for the new device, as it should receive it
-	 * @param passphrase the account passphrase, or {@code null} if the account has none
-	 * @return a future completing when the request is approved; it fails with {@link NotFoundException}
-	 *         if there is no such pending request
-	 * @throws IllegalArgumentException if the user key is empty
+	 * @param code the pairing code the new device shows
+	 * @return a future completing when the request is approved
+	 * @throws IllegalStateException if the client has no user key to hand over
 	 */
-	public CompletableFuture<Void> approveDeviceRegistration(String registrationId, byte[] userKey,
-			@Nullable String passphrase) {
+	public CompletableFuture<Void> approveDeviceRegistration(PairingCode code) {
+		return approveDeviceRegistration(code, null);
+	}
+
+	/**
+	 * Approves a pending request from a new device to join the user's account: the Director registers the
+	 * device to the user, and hands it this client's user key, sealed to the pairing code so that only the
+	 * new device can open it. The new device receives it from
+	 * {@link DirectorGuest#finishDeviceRegistration(DeviceRegistration)}.
+	 *
+	 * @param code the pairing code the new device shows
+	 * @param passphrase the account passphrase, or {@code null} if the account has none
+	 * @return a future completing when the request is approved; it fails with {@link NotFoundException} if
+	 *         there is no such pending request
+	 * @throws IllegalStateException if the client has no user key to hand over
+	 */
+	public CompletableFuture<Void> approveDeviceRegistration(PairingCode code, @Nullable String passphrase) {
 		checkOpen();
-		checkRegistrationId(registrationId);
-		Objects.requireNonNull(userKey, "userKey");
-		if (userKey.length == 0)
-			throw new IllegalArgumentException("The user key is empty");
+		Objects.requireNonNull(code, "code");
+		Signature.KeyPair uk = userKey;
+		if (uk == null)
+			throw new IllegalStateException("Approving a device hands over the user key, which this client does not have");
 
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
 		body.put("approved", true);
-		body.put("userPrivateKey", userKey);
+		body.put("userPrivateKey", CryptoBox.encryptSealed(uk.privateKey().bytes(), code.publicKey()));
 		putIfNotNull(body, "passphrase", passphrase);
-		return execute(HttpMethod.PATCH, registrationPath(registrationId), body);
+		return execute(HttpMethod.PATCH, registrationPath(code.getRegistrationId()), body);
 	}
 
 	/**
-	 * Denies a pending request from a new device to join the user's account. The new device learns of
-	 * it from {@link DirectorAuth#finishDeviceRegistration(Signature.KeyPair, String)}.
+	 * Denies a pending request from a new device to join the user's account. The new device learns of it
+	 * from {@link DirectorGuest#finishDeviceRegistration(DeviceRegistration)}.
 	 *
-	 * @param registrationId the id of the registration request
-	 * @return a future completing when the request is denied; it fails with {@link NotFoundException}
-	 *         if there is no such pending request
+	 * @param code the pairing code the new device shows
+	 * @return a future completing when the request is denied; it fails with {@link NotFoundException} if
+	 *         there is no such pending request
 	 */
-	public CompletableFuture<Void> denyDeviceRegistration(String registrationId) {
+	public CompletableFuture<Void> denyDeviceRegistration(PairingCode code) {
 		checkOpen();
-		checkRegistrationId(registrationId);
+		Objects.requireNonNull(code, "code");
 
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
 		body.put("approved", false);
-		return execute(HttpMethod.PATCH, registrationPath(registrationId), body);
+		return execute(HttpMethod.PATCH, registrationPath(code.getRegistrationId()), body);
 	}
 
 	static String registrationPath(String registrationId) {
 		return "/devices/registrations/" + DirectorTransport.encode(registrationId);
-	}
-
-	static void checkRegistrationId(String registrationId) {
-		Objects.requireNonNull(registrationId, "registrationId");
-		if (registrationId.isEmpty())
-			throw new IllegalArgumentException("registrationId is empty");
 	}
 
 	// ---- Passphrase ----------------------------------------------------------------------------
@@ -630,7 +681,7 @@ public class DirectorClient {
 	 */
 	public CompletableFuture<Profile> getProfile() {
 		checkOpen();
-		return ContextualFuture.of(fetchProfile());
+		return transport.deliver(fetchProfile());
 	}
 
 	/**
@@ -665,21 +716,20 @@ public class DirectorClient {
 	}
 
 	/**
-	 * Gets the public profile of any user: of this node, or of another super node, which the Director
-	 * then asks on this client's behalf.
+	 * Gets the public profile of any user: of this node, or of another super node, which the Director then
+	 * asks on this client's behalf.
 	 *
 	 * @param userId the id of the user
-	 * @return a future completing with the user's public profile, or with {@code null} if no such user
-	 *         is known
+	 * @return a future completing with the user's public profile, or empty if no such user is known
 	 */
-	public CompletableFuture<@Nullable UserProfile> getUserProfile(Id userId) {
+	public CompletableFuture<Optional<PublicProfile>> getUserProfile(Id userId) {
 		checkOpen();
 		Objects.requireNonNull(userId, "userId");
 		// Authenticated: the Director resolves a user of another node only for a user of its own.
-		Future<@Nullable UserProfile> profile = call(HttpMethod.GET, "/profile/" + userId.toBase58String(), null, true)
-				.<@Nullable UserProfile>compose(res -> res.json(UserProfile.class))
-				.recover(DirectorClient::nullIfNotFound);
-		return ContextualFuture.of(profile);
+		return transport.deliver(call(HttpMethod.GET, "/profile/" + userId.toBase58String(), null, true)
+				.compose(res -> res.json(PublicProfile.class))
+				.map(Optional::of)
+				.recover(DirectorClient::emptyIfNotFound));
 	}
 
 	private Future<Profile> fetchProfile() {
@@ -705,7 +755,7 @@ public class DirectorClient {
 		if (image.length == 0)
 			throw new IllegalArgumentException("The avatar image is empty");
 		String type = avatarType(contentType);
-		return ContextualFuture.of(uploadAvatar(Buffer.buffer(image), type));
+		return transport.deliver(uploadAvatar(Buffer.buffer(image), type));
 	}
 
 	/**
@@ -721,18 +771,18 @@ public class DirectorClient {
 		checkOpen();
 		Objects.requireNonNull(file, "file");
 		String type = avatarTypeOf(file);
-		return ContextualFuture.of(vertx.fileSystem().readFile(file.toString())
+		return transport.deliver(vertx.fileSystem().readFile(file.toString())
 				.compose(image -> uploadAvatar(image, type)));
 	}
 
 	/**
 	 * Downloads the user's current avatar.
 	 *
-	 * @return a future completing with the avatar, or with {@code null} if the user has none
+	 * @return a future completing with the avatar, or empty if the user has none
 	 */
-	public CompletableFuture<@Nullable Avatar> getAvatar() {
+	public CompletableFuture<Optional<Avatar>> getAvatar() {
 		checkOpen();
-		return ContextualFuture.of(fetchAvatar("/avatar"));
+		return transport.deliver(fetchAvatar("/avatar"));
 	}
 
 	/**
@@ -740,43 +790,64 @@ public class DirectorClient {
 	 * fetches on this client's behalf.
 	 *
 	 * @param userId the id of the user
-	 * @return a future completing with the avatar, or with {@code null} if the user has none or is not
-	 *         known
+	 * @return a future completing with the avatar, or empty if the user has none or is not known
 	 */
-	public CompletableFuture<@Nullable Avatar> getUserAvatar(Id userId) {
+	public CompletableFuture<Optional<Avatar>> getUserAvatar(Id userId) {
 		checkOpen();
 		Objects.requireNonNull(userId, "userId");
-		return ContextualFuture.of(fetchAvatar("/avatar/" + userId.toBase58String()));
+		return transport.deliver(fetchAvatar(userAvatarPath(userId)));
 	}
 
 	/**
-	 * Downloads the avatar of any user unless it is unchanged since a copy the caller holds - the way an
-	 * image cache keeps avatars current without downloading them every time. The Director is asked
-	 * whether {@code cached} is still the avatar, by the validators it was downloaded with, and sends the
-	 * image only if it is not.
+	 * Checks an avatar of the user the caller holds against the Director, the way an image cache keeps
+	 * avatars current: the image is downloaded only if it changed. See
+	 * {@link #refreshUserAvatar(Id, Avatar)}.
+	 *
+	 * @param held the copy the caller holds
+	 * @return a future completing with the outcome
+	 */
+	public CompletableFuture<AvatarRefresh> refreshAvatar(Avatar held) {
+		checkOpen();
+		Objects.requireNonNull(held, "held");
+		return transport.deliver(refresh("/avatar", held));
+	}
+
+	/**
+	 * Checks an avatar of any user the caller holds against the Director, the way an image cache keeps
+	 * avatars current. The Director is asked whether the held copy is still the avatar, by the validators
+	 * it was downloaded with, and sends the image only if it is not. A copy without validators is
+	 * downloaded again.
 	 *
 	 * @param userId the id of the user
-	 * @param cached the copy the caller holds, as returned by an earlier download or restored with
-	 *        {@link Avatar#of(String, byte[], String, String)}; {@code null} to download unconditionally
-	 * @return a future completing with {@code cached} itself if it is still the avatar, with the new
-	 *         avatar if it changed, or with {@code null} if the user has none any more or is not known
+	 * @param held the copy the caller holds, as downloaded, or restored with
+	 *        {@link Avatar#of(String, byte[], String, String)}
+	 * @return a future completing with the outcome: the held copy is still current, the avatar changed
+	 *         (with the new one), or it was removed
 	 */
-	public CompletableFuture<@Nullable Avatar> getUserAvatar(Id userId, @Nullable Avatar cached) {
+	public CompletableFuture<AvatarRefresh> refreshUserAvatar(Id userId, Avatar held) {
 		checkOpen();
 		Objects.requireNonNull(userId, "userId");
-		String path = "/avatar/" + userId.toBase58String();
-		if (cached == null || !cached.isRevalidatable())
-			return ContextualFuture.of(fetchAvatar(path));
+		Objects.requireNonNull(held, "held");
+		return transport.deliver(refresh(userAvatarPath(userId), held));
+	}
+
+	private static String userAvatarPath(Id userId) {
+		return "/avatar/" + userId.toBase58String();
+	}
+
+	private Future<AvatarRefresh> refresh(String path, Avatar held) {
+		if (!held.hasValidators())
+			return fetchAvatar(path).map(avatar -> avatar.map(AvatarRefresh::changed).orElseGet(AvatarRefresh::removed));
 
 		MultiMap conditions = MultiMap.caseInsensitiveMultiMap();
-		cached.getETag().ifPresent(tag -> conditions.set("If-None-Match", tag));
-		cached.getLastModified().ifPresent(time -> conditions.set("If-Modified-Since", time));
+		held.getETag().ifPresent(tag -> conditions.set("If-None-Match", tag));
+		held.getLastModified().ifPresent(time -> conditions.set("If-Modified-Since", time));
 		// Authenticated for the reason given in fetchAvatar.
-		Future<@Nullable Avatar> avatar = transport.conditionalGet(path, conditions, tokens)
-				.<@Nullable Avatar>map(res -> res.statusCode() == DirectorTransport.NOT_MODIFIED ?
-						cached : avatarOf(res))
-				.recover(DirectorClient::nullIfNotFound);
-		return ContextualFuture.of(avatar);
+		return transport.conditionalGet(path, conditions, tokens)
+				.map(res -> res.statusCode() == DirectorTransport.NOT_MODIFIED ?
+						AvatarRefresh.unchanged(held) : AvatarRefresh.changed(avatarOf(res)))
+				.recover(e -> e instanceof NotFoundException ? Future.succeededFuture(AvatarRefresh.removed()) :
+						Future.failedFuture(e));
 	}
 
 	/**
@@ -787,17 +858,17 @@ public class DirectorClient {
 	public CompletableFuture<Void> removeAvatar() {
 		checkOpen();
 		// The Director answers 404 when there is no avatar to remove: already the state asked for.
-		return ContextualFuture.of(call(HttpMethod.DELETE, "/avatar", null, true)
+		return transport.deliver(call(HttpMethod.DELETE, "/avatar", null, true)
 				.<Void>mapEmpty()
 				.recover(e -> e instanceof NotFoundException ? Future.succeededFuture() : Future.failedFuture(e)));
 	}
 
 	// Authenticated even for another user's avatar: the Director fetches one from another node only for a
 	// user of its own.
-	private Future<@Nullable Avatar> fetchAvatar(String path) {
+	private Future<Optional<Avatar>> fetchAvatar(String path) {
 		return call(HttpMethod.GET, path, null, true)
-				.<@Nullable Avatar>map(DirectorClient::avatarOf)
-				.recover(DirectorClient::nullIfNotFound);
+				.map(res -> Optional.of(avatarOf(res)))
+				.recover(DirectorClient::emptyIfNotFound);
 	}
 
 	private static Avatar avatarOf(DirectorTransport.Response res) {
@@ -851,17 +922,12 @@ public class DirectorClient {
 		// subscription, or the free plan without one - so it is the authority on the name. The catalog
 		// adds the details, and the subscription the terms.
 		Future<Profile> profile = fetchProfile();
-		Future<Subscription> subscription = call(HttpMethod.GET, "/subscriptions/active", null, true)
-				.compose(res -> res.statusCode() == 204 ? Future.<Subscription>succeededFuture(null) :
-						res.json(Subscription.class))
-				// The API documents a 404 for "no active subscription"; the Director answers 204.
-				.recover(e -> e instanceof NotFoundException ? Future.succeededFuture(null) : Future.failedFuture(e));
-		Future<List<Plan>> plans = call(HttpMethod.GET, "/plans", null, false)
-				.compose(res -> res.jsonList(Plan.class));
+		Future<Optional<Subscription>> subscription = fetchActiveSubscription();
+		Future<List<Plan>> plans = fetchPlans();
 
-		return ContextualFuture.of(Future.all(profile, subscription, plans).map(v -> {
+		return transport.deliver(Future.all(profile, subscription, plans).map(v -> {
 			String name = profile.result().getPlanName();
-			Subscription s = subscription.result();
+			Subscription s = subscription.result().orElse(null);
 			Plan plan = null;
 			for (Plan p : plans.result()) {
 				if (s != null ? p.getId() == s.getPlanId() : p.getName().equals(name)) {
@@ -872,6 +938,202 @@ public class DirectorClient {
 
 			return new UserPlan(name, plan, s);
 		}));
+	}
+
+	/**
+	 * Lists the plans the node offers.
+	 *
+	 * @return a future completing with the active plans
+	 */
+	public CompletableFuture<List<Plan>> getPlans() {
+		checkOpen();
+		return transport.deliver(fetchPlans());
+	}
+
+	private Future<List<Plan>> fetchPlans() {
+		return call(HttpMethod.GET, "/plans", null, false).compose(res -> res.jsonList(Plan.class));
+	}
+
+	// ---- Subscriptions and payments ------------------------------------------------------------
+
+	/**
+	 * Orders a subscription to a plan, for a number of monthly billing cycles. The subscription is pending
+	 * until its payment is made; see {@link #submitPayment(long, PaymentTransaction)}.
+	 *
+	 * @param planId the id of the plan, as {@link #getPlans()} lists it
+	 * @param billingCycles the number of months to pay for
+	 * @return a future completing with the subscription and its payment; it fails with
+	 *         {@link io.bosonnetwork.director.client.exceptions.ConflictException} if the user already has an
+	 *         active subscription, and with an
+	 *         {@link io.bosonnetwork.director.client.exceptions.InvalidRequestException} for the free plan,
+	 *         which needs none
+	 * @throws IllegalArgumentException if the plan id or the billing cycles are not positive
+	 */
+	public CompletableFuture<SubscriptionOrder> subscribe(int planId, int billingCycles) {
+		checkOpen();
+		checkPositive(planId, "planId");
+		checkPositive(billingCycles, "billingCycles");
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		body.put("planId", planId);
+		body.put("billingCycles", billingCycles);
+		return transport.deliver(call(HttpMethod.POST, "/subscriptions", body, true)
+				.compose(res -> res.json(SubscriptionOrder.class)));
+	}
+
+	/**
+	 * Lists the user's subscriptions, all on one page.
+	 *
+	 * @return a future completing with the subscriptions
+	 */
+	public CompletableFuture<PaginatedResult<Subscription>> listSubscriptions() {
+		checkOpen();
+		return fetchPage("/subscriptions", 0, 0, Subscription.class);
+	}
+
+	/**
+	 * Lists one page of the user's subscriptions.
+	 *
+	 * @param page the page number, from 1
+	 * @param pageSize the number of subscriptions on a page
+	 * @return a future completing with the page
+	 * @throws IllegalArgumentException if the page or the page size is not positive
+	 */
+	public CompletableFuture<PaginatedResult<Subscription>> listSubscriptions(long page, long pageSize) {
+		checkOpen();
+		checkPositive(page, "page");
+		checkPositive(pageSize, "pageSize");
+		return fetchPage("/subscriptions", page, pageSize, Subscription.class);
+	}
+
+	/**
+	 * Gets the user's active subscription, the one that grants the user's plan now.
+	 *
+	 * @return a future completing with the active subscription, or empty if the user has none (and is on
+	 *         the free plan)
+	 */
+	public CompletableFuture<Optional<Subscription>> getActiveSubscription() {
+		checkOpen();
+		return transport.deliver(fetchActiveSubscription());
+	}
+
+	private Future<Optional<Subscription>> fetchActiveSubscription() {
+		return call(HttpMethod.GET, "/subscriptions/active", null, true)
+				// The API documents a 404 for "no active subscription"; the Director answers 204.
+				.compose(res -> res.statusCode() == 204 ? Future.succeededFuture(Optional.<Subscription>empty()) :
+						res.json(Subscription.class).map(Optional::of))
+				.recover(DirectorClient::emptyIfNotFound);
+	}
+
+	/**
+	 * Gets one of the user's subscriptions.
+	 *
+	 * @param subscriptionId the id of the subscription
+	 * @return a future completing with the subscription, or empty if the user has no such subscription
+	 */
+	public CompletableFuture<Optional<Subscription>> getSubscription(long subscriptionId) {
+		checkOpen();
+		return fetchOptional("/subscriptions/" + subscriptionId, Subscription.class);
+	}
+
+	/**
+	 * Renews one of the user's subscriptions for more monthly billing cycles. It is extended once the
+	 * payment of the renewal is made.
+	 *
+	 * @param subscriptionId the id of the subscription: active, or past due
+	 * @param billingCycles the number of months to add
+	 * @return a future completing with the subscription and the payment for the renewal
+	 * @throws IllegalArgumentException if the billing cycles are not positive
+	 */
+	public CompletableFuture<SubscriptionOrder> renewSubscription(long subscriptionId, int billingCycles) {
+		checkOpen();
+		checkPositive(billingCycles, "billingCycles");
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		body.put("intent", "renew");
+		body.put("billingCycles", billingCycles);
+		return transport.deliver(call(HttpMethod.PUT, "/subscriptions/" + subscriptionId, body, true)
+				.compose(res -> res.json(SubscriptionOrder.class)));
+	}
+
+	/**
+	 * Upgrades one of the user's subscriptions to another plan. It changes once the payment of the upgrade
+	 * is made.
+	 *
+	 * @param subscriptionId the id of the subscription, which must be active
+	 * @param planId the id of the plan to upgrade to
+	 * @return a future completing with the subscription and the payment for the upgrade
+	 * @throws IllegalArgumentException if the plan id is not positive
+	 */
+	public CompletableFuture<SubscriptionOrder> upgradeSubscription(long subscriptionId, int planId) {
+		checkOpen();
+		checkPositive(planId, "planId");
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		body.put("intent", "upgrade");
+		body.put("newPlanId", planId);
+		return transport.deliver(call(HttpMethod.PUT, "/subscriptions/" + subscriptionId, body, true)
+				.compose(res -> res.json(SubscriptionOrder.class)));
+	}
+
+	/**
+	 * Lists the user's payments, all on one page.
+	 *
+	 * @return a future completing with the payments
+	 */
+	public CompletableFuture<PaginatedResult<Payment>> listPayments() {
+		checkOpen();
+		return fetchPage("/payments", 0, 0, Payment.class);
+	}
+
+	/**
+	 * Lists one page of the user's payments.
+	 *
+	 * @param page the page number, from 1
+	 * @param pageSize the number of payments on a page
+	 * @return a future completing with the page
+	 * @throws IllegalArgumentException if the page or the page size is not positive
+	 */
+	public CompletableFuture<PaginatedResult<Payment>> listPayments(long page, long pageSize) {
+		checkOpen();
+		checkPositive(page, "page");
+		checkPositive(pageSize, "pageSize");
+		return fetchPage("/payments", page, pageSize, Payment.class);
+	}
+
+	/**
+	 * Gets one of the user's payments.
+	 *
+	 * @param paymentId the id of the payment
+	 * @return a future completing with the payment, or empty if the user has no such payment
+	 */
+	public CompletableFuture<Optional<Payment>> getPayment(long paymentId) {
+		checkOpen();
+		return fetchOptional("/payments/" + paymentId, Payment.class);
+	}
+
+	/**
+	 * Submits the transaction that pays for one of the user's payments. The Director verifies it on the
+	 * network and then confirms the payment, which activates or extends its subscription.
+	 *
+	 * @param paymentId the id of the payment, which must be unpaid or pending
+	 * @param transaction the transaction that pays for it
+	 * @return a future completing when the Director has accepted the transaction for verification
+	 */
+	public CompletableFuture<Void> submitPayment(long paymentId, PaymentTransaction transaction) {
+		checkOpen();
+		Objects.requireNonNull(transaction, "transaction");
+		return execute(HttpMethod.PUT, "/payments/" + paymentId, transaction.fields());
+	}
+
+	/**
+	 * Cancels one of the user's payments, which must be unpaid or pending; the subscription it was for is
+	 * cancelled with it.
+	 *
+	 * @param paymentId the id of the payment
+	 * @return a future completing when the payment is cancelled; it fails with {@link NotFoundException} if
+	 *         the user has no such payment
+	 */
+	public CompletableFuture<Void> cancelPayment(long paymentId) {
+		checkOpen();
+		return execute(HttpMethod.DELETE, "/payments/" + paymentId, null);
 	}
 
 	// ---- HTTP ----------------------------------------------------------------------------------
@@ -892,12 +1154,31 @@ public class DirectorClient {
 
 	// An authenticated request answered with no content.
 	private CompletableFuture<Void> execute(HttpMethod method, String path, @Nullable Map<String, ?> json) {
-		return ContextualFuture.of(call(method, path, json, true).<Void>mapEmpty());
+		return transport.deliver(call(method, path, json, true).<Void>mapEmpty());
+	}
+
+	// An authenticated lookup of something that may not be there.
+	private <T> CompletableFuture<Optional<T>> fetchOptional(String path, Class<T> type) {
+		return transport.deliver(call(HttpMethod.GET, path, null, true)
+				.compose(res -> res.json(type))
+				.map(Optional::of)
+				.recover(DirectorClient::emptyIfNotFound));
+	}
+
+	// An authenticated request answered with a page; page 0 asks for everything on one page.
+	private <T> CompletableFuture<PaginatedResult<T>> fetchPage(String path, long page, long pageSize, Class<T> type) {
+		String query = page > 0 ? path + "?page=" + page + "&pageSize=" + pageSize : path;
+		return transport.deliver(call(HttpMethod.GET, query, null, true).compose(res -> res.paged(type)));
+	}
+
+	private static void checkPositive(long value, String name) {
+		if (value <= 0)
+			throw new IllegalArgumentException(name + " must be positive: " + value);
 	}
 
 	// An authenticated request answered with a list.
 	private <T> CompletableFuture<List<T>> fetchList(String path, Class<T> type) {
-		return ContextualFuture.of(call(HttpMethod.GET, path, null, true)
+		return transport.deliver(call(HttpMethod.GET, path, null, true)
 				.compose(res -> res.jsonList(type)));
 	}
 
@@ -941,8 +1222,9 @@ public class DirectorClient {
 		transport.checkOpen();
 	}
 
-	private static <T> Future<@Nullable T> nullIfNotFound(Throwable e) {
-		return e instanceof NotFoundException ? Future.<@Nullable T>succeededFuture(null) : Future.<@Nullable T>failedFuture(e);
+	// A lookup of something that is not there: empty, not a failure.
+	private static <T> Future<Optional<T>> emptyIfNotFound(Throwable e) {
+		return e instanceof NotFoundException ? Future.succeededFuture(Optional.empty()) : Future.failedFuture(e);
 	}
 
 	private static void checkPassphrase(String passphrase, String name) {
@@ -958,96 +1240,12 @@ public class DirectorClient {
 	 * the user id together with a device key. Not thread-safe.
 	 */
 	@NullUnmarked
-	public static class Builder {
-		private Vertx vertx;
-		private URL directorUrl;
-		private Id nodeId;
+	public static class Builder extends DirectorBuilder<Builder> {
 		private Signature.KeyPair userKey;
 		private Id userId;
 		private Signature.KeyPair deviceKey;
-		private InetSocketAddress resolveToAddress;
 
 		private Builder() {
-			// Adopt the Vert.x instance of the calling context, if there is one.
-			this.vertx = Vertx.currentContext() != null ? Vertx.currentContext().owner() : null;
-		}
-
-		/**
-		 * Sets the Vert.x instance the client runs on. Required unless the builder was created on a
-		 * Vert.x context, whose instance is then used.
-		 *
-		 * @param vertx the Vert.x instance
-		 * @return this builder
-		 */
-		public Builder vertx(Vertx vertx) {
-			this.vertx = Objects.requireNonNull(vertx, "vertx");
-			return this;
-		}
-
-		/**
-		 * Sets the URL of the Director (required): scheme, host, port and any path prefix the Director
-		 * is published under, without the {@code /api/v1} part.
-		 *
-		 * @param url an {@code http} or {@code https} URL
-		 * @return this builder
-		 * @throws IllegalArgumentException if the URL is not http(s)
-		 */
-		public Builder directorUrl(URL url) {
-			Objects.requireNonNull(url, "url");
-			if (!url.getProtocol().equals("http") && !url.getProtocol().equals("https"))
-				throw new IllegalArgumentException("Invalid Director URL protocol (must be http or https): " + url.getProtocol());
-			this.directorUrl = url;
-			return this;
-		}
-
-		/**
-		 * Sets the URL of the Director (required) from a string.
-		 *
-		 * @param url an {@code http} or {@code https} URL
-		 * @return this builder
-		 * @throws IllegalArgumentException if the URL is malformed or not http(s)
-		 * @see #directorUrl(URL)
-		 */
-		public Builder directorUrl(String url) {
-			Objects.requireNonNull(url, "url");
-			try {
-				return directorUrl(new URL(url));
-			} catch (MalformedURLException e) {
-				throw new IllegalArgumentException("Invalid Director URL: " + url, e);
-			}
-		}
-
-		/**
-		 * Sets the Boson id of the super node the Director runs on (optional). Access tokens are bound
-		 * to this id, and over HTTPS a self-signed Director certificate pinned to it is accepted as
-		 * well. Without it, the client binds its tokens to the id the Director reports. Configure it
-		 * when the id is known: a Director that reported another node's id could otherwise obtain
-		 * tokens valid on that node.
-		 *
-		 * @param nodeId the super node id
-		 * @return this builder
-		 */
-		public Builder nodeId(Id nodeId) {
-			this.nodeId = Objects.requireNonNull(nodeId, "nodeId");
-			return this;
-		}
-
-		/**
-		 * Sets the address to connect to instead of looking up the Director URL's host name (optional).
-		 * Requests still name the URL's host, and TLS still verifies the certificate against it: this
-		 * changes where the client connects, never what it trusts. It reaches a Director over loopback,
-		 * a LAN address or a tunnel while the URL keeps the name its certificate was issued for.
-		 *
-		 * @param address the address to connect to, resolved
-		 * @return this builder
-		 * @throws IllegalArgumentException if the address is unresolved
-		 */
-		public Builder resolveToAddress(InetSocketAddress address) {
-			Objects.requireNonNull(address, "address");
-			if (address.isUnresolved())
-				throw new IllegalArgumentException("Unresolved address: " + address);
-			this.resolveToAddress = address;
-			return this;
 		}
 
 		/**

@@ -179,7 +179,7 @@ public class SelfIssuedTokensTests {
 
 	private void withTransport(TransportTest test) throws Exception {
 		DirectorTransport transport = new DirectorTransport(vertx,
-				new URL("http://127.0.0.1:" + server.actualPort()), "/client", null, null, log);
+				new URL("http://127.0.0.1:" + server.actualPort()), "/client", null, null, null, log);
 		SelfIssuedTokens tokens = new SelfIssuedTokens(new CryptoIdentity(userKey), Id.of(userKey.publicKey().bytes()),
 				null, AccessScope.CLIENT.toString(), () -> Future.succeededFuture(nodeId), log);
 		try {

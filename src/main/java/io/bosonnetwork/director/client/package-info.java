@@ -30,9 +30,10 @@
  * {@link java.util.concurrent.CompletableFuture} that completes on the caller's Vert.x context;
  * signing in, token renewal and the wire encoding are handled by the client.
  * <p>
- * {@link io.bosonnetwork.director.client.DirectorAuth} covers what comes before an app holds a key to
- * act with: how the node signs users up, OAuth sign-in and binding a Boson identity to it, and joining
- * an existing account from a new device.
+ * {@link io.bosonnetwork.director.client.DirectorGuest} covers what a Director offers without signing in:
+ * the node's identity, status and plans, how it signs users up, where an OAuth sign-in starts, and a new
+ * device asking to join an existing account. {@link io.bosonnetwork.director.client.DirectorOAuth} carries
+ * an OAuth sign-in on: binding a Boson identity to it, its linked identities, renewal and sign-out.
  * <p>
  * {@link io.bosonnetwork.director.client.DirectorAdmin} is its counterpart for the admin API: users
  * and devices, subscriptions and payments, plans and their features, the node blacklist, and

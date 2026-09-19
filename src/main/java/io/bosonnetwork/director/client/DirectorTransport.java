@@ -29,12 +29,15 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JavaType;
 import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
+import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
@@ -54,6 +57,7 @@ import io.bosonnetwork.director.client.exceptions.DirectorException;
 import io.bosonnetwork.json.Json;
 import io.bosonnetwork.utils.Base58;
 import io.bosonnetwork.utils.Hex;
+import io.bosonnetwork.vertx.ContextualFuture;
 import io.bosonnetwork.web.PaginatedResult;
 
 /**
@@ -111,6 +115,8 @@ final class DirectorTransport {
 	// Where to connect instead of looking up the URL host, or null to look it up.
 	private final @Nullable SocketAddress server;
 	private final HttpClient httpClient;
+	// Where the clients complete the futures they return, if not where the answer arrives.
+	private final @Nullable Executor callbackExecutor;
 
 	private volatile boolean closed;
 
@@ -125,8 +131,9 @@ final class DirectorTransport {
 	 * @param log            the logger of the owning client
 	 */
 	DirectorTransport(Vertx vertx, URL directorUrl, String apiPath, @Nullable Id nodeId,
-			@Nullable InetSocketAddress resolveToAddress, Logger log) {
+			@Nullable InetSocketAddress resolveToAddress, @Nullable Executor callbackExecutor, Logger log) {
 		this.log = log;
+		this.callbackExecutor = callbackExecutor;
 		this.host = directorUrl.getHost();
 		this.port = directorUrl.getPort() > 0 ? directorUrl.getPort() : directorUrl.getDefaultPort();
 		this.server = resolveToAddress != null ? SocketAddress.inetSocketAddress(resolveToAddress) : null;
@@ -156,6 +163,26 @@ final class DirectorTransport {
 		}
 
 		this.httpClient = vertx.createHttpClient(options);
+	}
+
+	// Hands a result to the caller as the CompletableFuture every client call returns: completed on the
+	// configured callback executor, or else where the result arrives - the caller's Vert.x context, or an
+	// event loop.
+	<T> CompletableFuture<T> deliver(Future<T> result) {
+		Executor executor = callbackExecutor;
+		if (executor == null)
+			return ContextualFuture.of(result);
+
+		Promise<T> promise = Promise.promise();
+		result.onComplete(ar -> {
+			try {
+				executor.execute(() -> promise.handle(ar));
+			} catch (RuntimeException e) {
+				// A rejecting executor (shut down) still must not leave the caller waiting forever.
+				promise.tryFail(e);
+			}
+		});
+		return ContextualFuture.of(promise.future());
 	}
 
 	Future<Void> close() {

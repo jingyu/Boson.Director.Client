@@ -25,20 +25,21 @@ package io.bosonnetwork.director.client;
 import java.util.Objects;
 
 import io.bosonnetwork.Id;
+import io.bosonnetwork.crypto.Signature;
 
 /**
  * The outcome of an approved device registration, as the new device receives it from
- * {@link DirectorAuth#finishDeviceRegistration(io.bosonnetwork.crypto.Signature.KeyPair, String)}:
- * the user the device now belongs to, and the user key the approving device handed over.
+ * {@link DirectorGuest#finishDeviceRegistration(DeviceRegistration)}: the user the device now belongs to,
+ * and that user's key, handed over by the approving device. Immutable.
  * <p>
- * The Director relays the user key without reading it: how it is protected in transit - typically
- * sealed to a key the new device showed the approving one - is up to the two devices.
+ * The approving device sealed the key to the new device's registration, so the Director relayed it
+ * without being able to read it; it is opened here, and checked to be the named user's key.
  */
 public class DeviceApproval {
 	private final Id userId;
-	private final byte[] userKey;
+	private final Signature.KeyPair userKey;
 
-	DeviceApproval(Id userId, byte[] userKey) {
+	DeviceApproval(Id userId, Signature.KeyPair userKey) {
 		this.userId = Objects.requireNonNull(userId, "userId");
 		this.userKey = Objects.requireNonNull(userKey, "userKey");
 	}
@@ -53,12 +54,11 @@ public class DeviceApproval {
 	}
 
 	/**
-	 * Returns the user key as the approving device passed it, exactly as it was sent. The array is not
-	 * copied; it belongs to the caller.
+	 * Returns the user's key pair, to act as the user with a {@link DirectorClient}.
 	 *
-	 * @return the user key, as relayed
+	 * @return the user key pair
 	 */
-	public byte[] getUserKey() {
+	public Signature.KeyPair getUserKey() {
 		return userKey;
 	}
 

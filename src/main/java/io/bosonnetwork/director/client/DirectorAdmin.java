@@ -52,7 +52,6 @@ import io.bosonnetwork.director.client.exceptions.DirectorException;
 import io.bosonnetwork.director.client.exceptions.NotFoundException;
 import io.bosonnetwork.json.Json;
 import io.bosonnetwork.service.AccessScope;
-import io.bosonnetwork.vertx.ContextualFuture;
 import io.bosonnetwork.web.PaginatedResult;
 
 /**
@@ -104,10 +103,13 @@ import io.bosonnetwork.web.PaginatedResult;
  * <h2>Threading</h2>
  * The client is thread-safe. A call made on a Vert.x context completes on that context, and so do
  * the continuations chained on the returned {@link CompletableFuture}. A call made from any other
- * thread completes on a Vert.x event loop; such a caller may block on the returned future, which
+ * thread completes on a Vert.x event loop, unless the builder was given a
+ * {@linkplain DirectorBuilder#callbackExecutor(java.util.concurrent.Executor) callback executor}, which
+ * such an app should do if its continuations may block. A caller may block on the returned future, which
  * must never be done on an event loop. A Vert.x caller can turn a returned future back into a
- * {@link io.vertx.core.Future} with {@code Future.fromCompletionStage}. Cancellation is not
- * supported: {@code cancel()} returns {@code false} and never stops a call in flight. Call
+ * {@link io.vertx.core.Future} with {@code Future.fromCompletionStage}. The futures follow the
+ * CompletableFuture contract: {@code cancel()}, {@code complete()} and the timeouts complete the future,
+ * though the call in flight is not stopped and its result is then ignored. Call
  * {@link #close()} when done with the client.
  *
  * <p>Example:
@@ -143,7 +145,7 @@ public class DirectorAdmin {
 		this.nodeId = builder.nodeId;
 		this.identity = new CryptoIdentity(Objects.requireNonNull(builder.userKey, "userKey must be set"));
 
-		this.transport = new DirectorTransport(vertx, directorUrl, ADMIN_API, nodeId, builder.resolveToAddress, log);
+		this.transport = new DirectorTransport(vertx, directorUrl, ADMIN_API, nodeId, builder.resolveToAddress, builder.callbackExecutor, log);
 		// Issued by the administrator for itself: the Director accepts a token whose issuer is its
 		// subject, and grants the admin role from the user record, not from the scope claim.
 		this.tokens = new SelfIssuedTokens(identity, identity.getId(), null, AccessScope.ADMIN.toString(),
@@ -184,7 +186,7 @@ public class DirectorAdmin {
 	 * @return a future completing when the client is closed
 	 */
 	public CompletableFuture<Void> close() {
-		return ContextualFuture.of(transport.close());
+		return transport.deliver(transport.close());
 	}
 
 	/**
@@ -206,7 +208,7 @@ public class DirectorAdmin {
 	 */
 	public CompletableFuture<Id> getNodeId() {
 		checkOpen();
-		return ContextualFuture.of(fetchNodeId());
+		return transport.deliver(fetchNodeId());
 	}
 
 	/**
@@ -1088,7 +1090,7 @@ public class DirectorAdmin {
 		body.put("nodeId", Objects.requireNonNull(nodeId, "nodeId"));
 
 		// The Director answers with the federated node, or with a JSON null when there is none.
-		return ContextualFuture.of(call(HttpMethod.POST, "/federation/proposals", body).compose(res -> res.decode(b -> {
+		return transport.deliver(call(HttpMethod.POST, "/federation/proposals", body).compose(res -> res.decode(b -> {
 			if (b.toString(StandardCharsets.UTF_8).trim().equals("null"))
 				return Optional.<FederatedNode>empty();
 
@@ -1191,13 +1193,13 @@ public class DirectorAdmin {
 	// A request answered with no content.
 	private CompletableFuture<Void> execute(HttpMethod method, String path,
 			@Nullable Map<String, ?> body) {
-		return ContextualFuture.of(call(method, path, body).<Void>mapEmpty());
+		return transport.deliver(call(method, path, body).<Void>mapEmpty());
 	}
 
 	// A request answered with one object.
 	private <T> CompletableFuture<T> submit(HttpMethod method, String path,
 			@Nullable Map<String, ?> body, Class<T> type) {
-		return ContextualFuture.of(call(method, path, body).compose(res -> res.json(type)));
+		return transport.deliver(call(method, path, body).compose(res -> res.json(type)));
 	}
 
 	private <T> CompletableFuture<T> fetch(Query query, Class<T> type) {
@@ -1205,7 +1207,7 @@ public class DirectorAdmin {
 	}
 
 	private <T> CompletableFuture<Optional<T>> find(Query query, Class<T> type) {
-		return ContextualFuture.of(call(HttpMethod.GET, query.toString(), null)
+		return transport.deliver(call(HttpMethod.GET, query.toString(), null)
 				.compose(res -> res.json(type))
 				.map(Optional::of)
 				.recover(e -> e instanceof NotFoundException ?
@@ -1213,12 +1215,12 @@ public class DirectorAdmin {
 	}
 
 	private <T> CompletableFuture<List<T>> fetchList(Query query, Class<T> type) {
-		return ContextualFuture.of(call(HttpMethod.GET, query.toString(), null)
+		return transport.deliver(call(HttpMethod.GET, query.toString(), null)
 				.compose(res -> res.jsonList(type)));
 	}
 
 	private <T> CompletableFuture<PaginatedResult<T>> fetchPage(Query query, Class<T> type) {
-		return ContextualFuture.of(call(HttpMethod.GET, query.toString(), null)
+		return transport.deliver(call(HttpMethod.GET, query.toString(), null)
 				.compose(res -> res.paged(type)));
 	}
 
@@ -1356,93 +1358,10 @@ public class DirectorAdmin {
 	 * should be configured whenever it is known. Not thread-safe.
 	 */
 	@NullUnmarked
-	public static class Builder {
-		private Vertx vertx;
-		private URL directorUrl;
-		private Id nodeId;
+	public static class Builder extends DirectorBuilder<Builder> {
 		private Signature.KeyPair userKey;
-		private InetSocketAddress resolveToAddress;
 
 		private Builder() {
-			// Adopt the Vert.x instance of the calling context, if there is one.
-			this.vertx = Vertx.currentContext() != null ? Vertx.currentContext().owner() : null;
-		}
-
-		/**
-		 * Sets the Vert.x instance the client runs on. Required unless the builder was created on a
-		 * Vert.x context, whose instance is then used.
-		 *
-		 * @param vertx the Vert.x instance
-		 * @return this builder
-		 */
-		public Builder vertx(Vertx vertx) {
-			this.vertx = Objects.requireNonNull(vertx, "vertx");
-			return this;
-		}
-
-		/**
-		 * Sets the URL of the Director (required): scheme, host, port and any path prefix the Director
-		 * is published under, without the {@code /api/v1} part.
-		 *
-		 * @param url an {@code http} or {@code https} URL
-		 * @return this builder
-		 * @throws IllegalArgumentException if the URL is not http(s)
-		 */
-		public Builder directorUrl(URL url) {
-			Objects.requireNonNull(url, "url");
-			if (!url.getProtocol().equals("http") && !url.getProtocol().equals("https"))
-				throw new IllegalArgumentException("Invalid Director URL protocol (must be http or https): " + url.getProtocol());
-			this.directorUrl = url;
-			return this;
-		}
-
-		/**
-		 * Sets the URL of the Director (required) from a string.
-		 *
-		 * @param url an {@code http} or {@code https} URL
-		 * @return this builder
-		 * @throws IllegalArgumentException if the URL is malformed or not http(s)
-		 * @see #directorUrl(URL)
-		 */
-		public Builder directorUrl(String url) {
-			Objects.requireNonNull(url, "url");
-			try {
-				return directorUrl(new URL(url));
-			} catch (MalformedURLException e) {
-				throw new IllegalArgumentException("Invalid Director URL: " + url, e);
-			}
-		}
-
-		/**
-		 * Sets the Boson id of the super node the Director runs on (optional, recommended). Access
-		 * tokens are bound to this id, and over HTTPS a self-signed Director certificate pinned to it is
-		 * accepted as well. Without it, the client binds its tokens to the id the Director reports: a
-		 * Director that reported another node's id could then obtain admin tokens valid on that node.
-		 *
-		 * @param nodeId the super node id
-		 * @return this builder
-		 */
-		public Builder nodeId(Id nodeId) {
-			this.nodeId = Objects.requireNonNull(nodeId, "nodeId");
-			return this;
-		}
-
-		/**
-		 * Sets the address to connect to instead of looking up the Director URL's host name (optional).
-		 * Requests still name the URL's host, and TLS still verifies the certificate against it: this
-		 * changes where the client connects, never what it trusts. It reaches a Director over loopback,
-		 * a LAN address or a tunnel while the URL keeps the name its certificate was issued for.
-		 *
-		 * @param address the address to connect to, resolved
-		 * @return this builder
-		 * @throws IllegalArgumentException if the address is unresolved
-		 */
-		public Builder resolveToAddress(InetSocketAddress address) {
-			Objects.requireNonNull(address, "address");
-			if (address.isUnresolved())
-				throw new IllegalArgumentException("Unresolved address: " + address);
-			this.resolveToAddress = address;
-			return this;
 		}
 
 		/**

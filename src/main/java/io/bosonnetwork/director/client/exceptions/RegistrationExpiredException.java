@@ -20,48 +20,26 @@
  * SOFTWARE.
  */
 
-package io.bosonnetwork.director.client;
-
-import java.util.Objects;
-
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
+package io.bosonnetwork.director.client.exceptions;
 
 /**
- * An OAuth provider a Director signs users in with, as listed by {@link DirectorGuest#getProviders()}.
- * Immutable.
+ * A device's request to join an account expired before the user answered it (HTTP 408 on finishing the
+ * registration). The Director keeps a request for three minutes; the device has to ask again.
  */
-public class AuthProvider {
-	private final String id;
-	private final String name;
-
-	@JsonCreator
-	AuthProvider(@JsonProperty(value = "id", required = true) String id,
-			@JsonProperty(value = "name", required = true) String name) {
-		this.id = Objects.requireNonNull(id, "id");
-		this.name = Objects.requireNonNull(name, "name");
-	}
+public class RegistrationExpiredException extends DirectorException {
+	private static final long serialVersionUID = -1880742239713554052L;
 
 	/**
-	 * Returns the provider id, as {@link DirectorGuest#authorizeUrl(String, String)} takes it.
-	 *
-	 * @return the provider id, such as {@code github}
+	 * The HTTP status the Director answers an expired registration with.
 	 */
-	public String getId() {
-		return id;
-	}
+	public static final int STATUS = 408;
 
 	/**
-	 * Returns the provider's display name.
+	 * Creates the exception.
 	 *
-	 * @return the provider name
+	 * @param message the detail message
 	 */
-	public String getName() {
-		return name;
-	}
-
-	@Override
-	public String toString() {
-		return "AuthProvider{id=" + id + ", name=" + name + "}";
+	public RegistrationExpiredException(String message) {
+		super(STATUS, message);
 	}
 }

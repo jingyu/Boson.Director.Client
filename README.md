@@ -7,29 +7,47 @@ tokens or wire encodings.
 
 ## Features
 
+Four clients, one per way of talking to a Director:
+
+| Client | Acts as | For |
+|---|---|---|
+| `DirectorGuest` | nobody | what a node offers without signing in; a new device asking to join an account |
+| `DirectorOAuth` | an OAuth sign-in session | binding a Boson identity to the sign-in; linked identities; renewal; sign-out |
+| `DirectorClient` | a user (its key, or one of its devices) | everything about the user's account |
+| `DirectorAdmin` | an administrator | the admin API |
+
+`DirectorClient`:
+
 | Area | Calls |
 |---|---|
-| Registration | `registerUser` - proof-of-work registration, optionally with an initial device |
-| Devices | `registerDevice`, `listDevices`, `removeDevice` |
-| New devices | `getDeviceRegistration`, `approveDeviceRegistration`, `denyDeviceRegistration` - answer a device asking to join the account |
+| Registration | `registerUser` - proof-of-work registration, optionally with an initial device; `deactivate` |
+| Devices | `registerDevice`, `listDevices`, `getDevice`, `removeDevice` |
+| New devices | `getDeviceRegistration`, `approveDeviceRegistration`, `denyDeviceRegistration` - by the `PairingCode` the new device shows |
 | Passphrase | `setPassphrase`, `updatePassphrase`, `clearPassphrase` |
 | Profile | `getProfile`, `updateProfile` |
-| Avatar | `updateAvatar` (bytes or file), `getAvatar`, `removeAvatar` |
-| Other users | `getUserProfile`, `getUserAvatar` - of this node or another super node; `getUserAvatar(id, cached)` downloads only when the held copy has changed |
-| Node | `getNodeId`, `getNodeStatus` |
-| Plan | `getPlan` - the plan name, its catalog entry and the active subscription |
+| Avatar | `updateAvatar` (bytes or file), `getAvatar`, `refreshAvatar`, `removeAvatar` |
+| Other users | `getUserProfile`, `getUserAvatar`, `refreshUserAvatar` - of this node or another super node |
+| Node | `getNodeId`, `getNodeStatus`, `getPlans` |
+| Plan and billing | `getPlan`, `subscribe`, `listSubscriptions`, `getActiveSubscription`, `getSubscription`, `renewSubscription`, `upgradeSubscription`, `listPayments`, `getPayment`, `submitPayment`, `cancelPayment` |
 
-`DirectorAuth` covers what comes before an app holds a key to act with:
+`DirectorGuest`:
 
 | Area | Calls |
 |---|---|
-| Sign-up | `isProofOfWorkRegistrationEnabled`, `getProviders` |
-| OAuth | `authorizeUrl`, `getSession`, `bindUserIdentity` - bind a Boson identity to an OAuth sign-in |
-| Joining an account | `requestDeviceRegistration`, `finishDeviceRegistration` - a new device, approved from one already registered |
+| Node | `getNodeId`, `getNodeStatus`, `getPlans` |
+| Sign-up | `getRegistrationOptions`, `getProviders`, `authorizeUrl` |
+| Joining an account | `requestDeviceRegistration`, `finishDeviceRegistration` - the pairing code carries the key the user key is sealed to, so the Director relays it unread |
 
-Every call returns a `CompletableFuture` that completes on the caller's Vert.x context: a call made
-on a Vert.x context completes on that context, and so do the continuations chained on it. A Vert.x
-caller can convert one back with `Future.fromCompletionStage`. Cancellation is not supported.
+Lookups of things that may not exist complete with an `Optional`; failures are `DirectorException`s, with a
+subclass for each condition a caller is likely to handle (`ConflictException`, `PassphraseRequiredException`,
+`RegistrationDeniedException`, `ProofOfWorkException`, ...).
+
+Every call returns a `CompletableFuture`. A call made on a Vert.x context completes on that context, and so
+do the continuations chained on it; a Vert.x caller can convert one back with `Future.fromCompletionStage`.
+An app that does not run on Vert.x can set `callbackExecutor(...)` on the builder to have its futures
+complete - and its continuations run - on its own executor instead of an event loop. The futures honour the
+`CompletableFuture` contract: `orTimeout`, `completeOnTimeout`, `complete` and `cancel` act on the future
+(they do not stop the request in flight).
 
 ## Dependency
 

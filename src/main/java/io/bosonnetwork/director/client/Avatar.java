@@ -33,7 +33,7 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * An avatar carries the validators the Director sent with it - its entity tag and last-modified
  * time - so that a copy kept by the caller can later be checked for changes without downloading it
- * again: see {@link DirectorClient#getUserAvatar(io.bosonnetwork.Id, Avatar)}. A caller that keeps
+ * again: see {@link DirectorClient#refreshUserAvatar(io.bosonnetwork.Id, Avatar)}. A caller that keeps
  * avatars across restarts stores the content type, the data and both validators, and restores the copy
  * with {@link #of(String, byte[], String, String)}.
  */
@@ -102,12 +102,12 @@ public class Avatar {
 	}
 
 	/**
-	 * Tells whether the avatar carries a validator, so that {@link DirectorClient#getUserAvatar(
-	 * io.bosonnetwork.Id, Avatar)} can check it for changes instead of downloading it again.
+	 * Tells whether the avatar carries a validator, which a refresh needs to check it for changes: one
+	 * without is downloaded again.
 	 *
 	 * @return {@code true} if the avatar has an entity tag or a last-modified time
 	 */
-	public boolean isRevalidatable() {
+	public boolean hasValidators() {
 		return eTag != null || lastModified != null;
 	}
 

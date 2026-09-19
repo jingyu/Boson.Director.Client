@@ -20,48 +20,23 @@
  * SOFTWARE.
  */
 
-package io.bosonnetwork.director.client;
-
-import java.util.Objects;
-
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
+package io.bosonnetwork.director.client.exceptions;
 
 /**
- * An OAuth provider a Director signs users in with, as listed by {@link DirectorGuest#getProviders()}.
- * Immutable.
+ * The proof of work a registration needs could not be completed: no solution was found within the
+ * search budget. Nothing was sent. Registering again solves a fresh challenge, which may well succeed.
+ * Its status is {@link #NO_HTTP_STATUS}.
  */
-public class AuthProvider {
-	private final String id;
-	private final String name;
-
-	@JsonCreator
-	AuthProvider(@JsonProperty(value = "id", required = true) String id,
-			@JsonProperty(value = "name", required = true) String name) {
-		this.id = Objects.requireNonNull(id, "id");
-		this.name = Objects.requireNonNull(name, "name");
-	}
+public class ProofOfWorkException extends DirectorException {
+	private static final long serialVersionUID = 5609914830761405171L;
 
 	/**
-	 * Returns the provider id, as {@link DirectorGuest#authorizeUrl(String, String)} takes it.
+	 * Creates the exception.
 	 *
-	 * @return the provider id, such as {@code github}
+	 * @param message the detail message
+	 * @param cause   the solver's failure
 	 */
-	public String getId() {
-		return id;
-	}
-
-	/**
-	 * Returns the provider's display name.
-	 *
-	 * @return the provider name
-	 */
-	public String getName() {
-		return name;
-	}
-
-	@Override
-	public String toString() {
-		return "AuthProvider{id=" + id + ", name=" + name + "}";
+	public ProofOfWorkException(String message, Throwable cause) {
+		super(message, cause);
 	}
 }

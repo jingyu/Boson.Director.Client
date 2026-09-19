@@ -28,40 +28,42 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
- * An OAuth provider a Director signs users in with, as listed by {@link DirectorGuest#getProviders()}.
- * Immutable.
+ * A subscription the user ordered and the payment that settles it, as
+ * {@link DirectorClient#subscribe(int, int)}, {@link DirectorClient#renewSubscription(long, int)} and
+ * {@link DirectorClient#upgradeSubscription(long, int)} return them. The subscription is pending until
+ * the payment is made; see {@link DirectorClient#submitPayment(long, PaymentTransaction)}. Immutable.
  */
-public class AuthProvider {
-	private final String id;
-	private final String name;
+public class SubscriptionOrder {
+	private final Subscription subscription;
+	private final Payment payment;
 
 	@JsonCreator
-	AuthProvider(@JsonProperty(value = "id", required = true) String id,
-			@JsonProperty(value = "name", required = true) String name) {
-		this.id = Objects.requireNonNull(id, "id");
-		this.name = Objects.requireNonNull(name, "name");
+	SubscriptionOrder(@JsonProperty(value = "subscription", required = true) Subscription subscription,
+			@JsonProperty(value = "payment", required = true) Payment payment) {
+		this.subscription = Objects.requireNonNull(subscription, "subscription");
+		this.payment = Objects.requireNonNull(payment, "payment");
 	}
 
 	/**
-	 * Returns the provider id, as {@link DirectorGuest#authorizeUrl(String, String)} takes it.
+	 * Returns the subscription ordered.
 	 *
-	 * @return the provider id, such as {@code github}
+	 * @return the subscription
 	 */
-	public String getId() {
-		return id;
+	public Subscription getSubscription() {
+		return subscription;
 	}
 
 	/**
-	 * Returns the provider's display name.
+	 * Returns the payment that settles it: its amount, currency and id.
 	 *
-	 * @return the provider name
+	 * @return the payment
 	 */
-	public String getName() {
-		return name;
+	public Payment getPayment() {
+		return payment;
 	}
 
 	@Override
 	public String toString() {
-		return "AuthProvider{id=" + id + ", name=" + name + "}";
+		return "SubscriptionOrder{subscription=" + subscription + ", payment=" + payment + "}";
 	}
 }

@@ -26,9 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -73,6 +71,7 @@ public class AvatarRevalidationTests {
 	private volatile byte[] image;
 	private volatile boolean alwaysNotModified;
 	private volatile MultiMap lastConditions;
+	private volatile String lastPath;
 
 	@BeforeAll
 	void setup() throws Exception {
@@ -83,6 +82,7 @@ public class AvatarRevalidationTests {
 				return;
 			}
 
+			lastPath = req.path();
 			MultiMap conditions = MultiMap.caseInsensitiveMultiMap();
 			if (req.getHeader("If-None-Match") != null)
 				conditions.set("If-None-Match", req.getHeader("If-None-Match"));
@@ -127,54 +127,63 @@ public class AvatarRevalidationTests {
 	}
 
 	@Test
-	void anUnchangedAvatarIsTheCallersCopy() throws Exception {
-		Avatar first = await(client.getUserAvatar(userId));
-		assertNotNull(first);
+	void anUnchangedAvatarIsTheHeldCopy() throws Exception {
+		Avatar first = await(client.getUserAvatar(userId)).orElseThrow();
 		assertEquals("\"v1\"", first.getETag().orElseThrow());
-		assertTrue(first.isRevalidatable());
+		assertTrue(first.hasValidators());
 		assertTrue(lastConditions.isEmpty());
 
-		assertSame(first, await(client.getUserAvatar(userId, first)));
+		AvatarRefresh refresh = await(client.refreshUserAvatar(userId, first));
+		assertEquals(AvatarRefresh.Status.UNCHANGED, refresh.getStatus());
+		assertSame(first, refresh.getAvatar().orElseThrow());
 		assertEquals("\"v1\"", lastConditions.get("If-None-Match"));
 
-		// A copy restored from storage revalidates just the same.
+		// A copy restored from storage refreshes just the same.
 		Avatar restored = Avatar.of(first.getContentType(), first.getData(), first.getETag().orElse(null),
 				first.getLastModified().orElse(null));
-		assertSame(restored, await(client.getUserAvatar(userId, restored)));
+		assertEquals(AvatarRefresh.Status.UNCHANGED, await(client.refreshUserAvatar(userId, restored)).getStatus());
+
+		// The user's own avatar, through its own path.
+		assertEquals(AvatarRefresh.Status.UNCHANGED, await(client.refreshAvatar(first)).getStatus());
+		assertTrue(lastPath.endsWith("/client/avatar"));
 	}
 
 	@Test
 	void aChangedAvatarIsDownloaded() throws Exception {
-		Avatar first = await(client.getUserAvatar(userId));
-		assertNotNull(first);
+		Avatar first = await(client.getUserAvatar(userId)).orElseThrow();
 
 		version = "v2";
 		image = "second".getBytes(StandardCharsets.UTF_8);
-		Avatar second = await(client.getUserAvatar(userId, first));
-		assertNotNull(second);
+		AvatarRefresh refresh = await(client.refreshUserAvatar(userId, first));
+		assertEquals(AvatarRefresh.Status.CHANGED, refresh.getStatus());
+		Avatar second = refresh.getAvatar().orElseThrow();
 		assertNotSame(first, second);
 		assertArrayEquals(image, second.getData());
 		assertEquals("\"v2\"", second.getETag().orElseThrow());
 	}
 
 	@Test
-	void aRemovedAvatarIsNull() throws Exception {
-		Avatar first = await(client.getUserAvatar(userId));
+	void aRemovedAvatarIsReported() throws Exception {
+		Avatar first = await(client.getUserAvatar(userId)).orElseThrow();
 		image = null;
-		assertNull(await(client.getUserAvatar(userId, first)));
+		AvatarRefresh refresh = await(client.refreshUserAvatar(userId, first));
+		assertEquals(AvatarRefresh.Status.REMOVED, refresh.getStatus());
+		assertTrue(refresh.getAvatar().isEmpty());
+		assertTrue(await(client.getUserAvatar(userId)).isEmpty());
 	}
 
 	@Test
 	void aCopyWithoutValidatorsIsDownloadedAgain() throws Exception {
 		Avatar bare = Avatar.of("image/png", new byte[] { 1 }, null, null);
-		assertFalse(bare.isRevalidatable());
+		assertFalse(bare.hasValidators());
 
-		Avatar downloaded = await(client.getUserAvatar(userId, bare));
-		assertNotSame(bare, downloaded);
+		AvatarRefresh refresh = await(client.refreshUserAvatar(userId, bare));
+		assertEquals(AvatarRefresh.Status.CHANGED, refresh.getStatus());
+		assertArrayEquals(image, refresh.getAvatar().orElseThrow().getData());
 		assertTrue(lastConditions.isEmpty());
-		// No copy at all: an unconditional download.
-		assertArrayEquals(image, await(client.getUserAvatar(userId, null)).getData());
-		assertTrue(lastConditions.isEmpty());
+
+		image = null;
+		assertEquals(AvatarRefresh.Status.REMOVED, await(client.refreshUserAvatar(userId, bare)).getStatus());
 	}
 
 	@Test

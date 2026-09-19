@@ -37,11 +37,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
 import io.bosonnetwork.Id;
+import io.bosonnetwork.crypto.CryptoBox;
 import io.bosonnetwork.crypto.Signature;
 import io.bosonnetwork.json.Json;
 
 /**
- * Tests that {@link DirectorAuth#finishDeviceRegistration(Signature.KeyPair, String)} waits as long as
+ * Tests that {@link DirectorGuest#finishDeviceRegistration(DeviceRegistration)} waits as long as
  * the Director holds it, against a stub Director that answers only after the connection's own idle
  * timeout has passed. The real Director holds the call until the user answers - which may well take
  * longer than a minute - so this takes over a minute to run.
@@ -51,8 +52,10 @@ public class DeviceRegistrationWaitTests {
 	// Longer than the 60 seconds a pooled connection may sit idle.
 	private static final long ANSWER_DELAY = TimeUnit.SECONDS.toMillis(65);
 
-	private final Id userId = Id.random();
-	private final byte[] userKey = { 7, 7, 7 };
+	private final Signature.KeyPair userKey = Signature.KeyPair.random();
+	private final Id userId = Id.of(userKey.publicKey().bytes());
+	private final DeviceRegistration registration =
+			new DeviceRegistration("registration", Signature.KeyPair.random(), CryptoBox.KeyPair.random());
 
 	private Vertx vertx;
 	private HttpServer server;
@@ -65,7 +68,8 @@ public class DeviceRegistrationWaitTests {
 						.putHeader("Content-Type", "application/json")
 						.end(new JsonObject()
 								.put("userId", userId.toString())
-								.put("userPrivateKey", Json.BASE64_ENCODER.encodeToString(userKey))
+								.put("userPrivateKey", Json.BASE64_ENCODER.encodeToString(
+										CryptoBox.encryptSealed(userKey.privateKey().bytes(), registration.sealingKey().publicKey())))
 								.toBuffer())))).listen(0, "127.0.0.1"));
 	}
 
@@ -80,13 +84,13 @@ public class DeviceRegistrationWaitTests {
 
 	@Test
 	void finishOutwaitsTheConnectionIdleTimeout() throws Exception {
-		DirectorAuth auth = DirectorAuth.builder().vertx(vertx).directorUrl("http://127.0.0.1:" + server.actualPort())
+		DirectorGuest auth = DirectorGuest.builder().vertx(vertx).directorUrl("http://127.0.0.1:" + server.actualPort())
 				.build();
 		try {
-			DeviceApproval approval = auth.finishDeviceRegistration(Signature.KeyPair.random(), "registration")
+			DeviceApproval approval = auth.finishDeviceRegistration(registration)
 					.get(ANSWER_DELAY + TimeUnit.SECONDS.toMillis(30), TimeUnit.MILLISECONDS);
 			assertEquals(userId, approval.getUserId());
-			assertArrayEquals(userKey, approval.getUserKey());
+			assertArrayEquals(userKey.privateKey().bytes(), approval.getUserKey().privateKey().bytes());
 		} finally {
 			auth.close().get(10, TimeUnit.SECONDS);
 		}

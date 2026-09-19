@@ -31,8 +31,9 @@ import io.bosonnetwork.BosonException;
  * <p>
  * When the Director answered, {@link #getStatus()} is the HTTP status of its answer and the message
  * is its explanation; the conditions a caller is likely to handle have their own subclasses. When it
- * did not (a connection, TLS or timeout failure), the status is {@link #NO_HTTP_STATUS} and the cause
- * is the underlying error.
+ * did not (a connection, TLS or timeout failure), or the call failed before anything was sent (see
+ * {@link ProofOfWorkException}), the status is {@link #NO_HTTP_STATUS} and the cause is the underlying
+ * error.
  */
 public class DirectorException extends BosonException {
 	private static final long serialVersionUID = 4061851672318309212L;
