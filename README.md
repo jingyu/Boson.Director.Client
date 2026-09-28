@@ -51,12 +51,45 @@ complete - and its continuations run - on its own executor instead of an event l
 
 ## Dependency
 
+Published to Maven Central under the group id `io.bosonnetwork`. The current release is **3.1.2**
+and requires Java 17 or later.
+
+**Maven**
+
 ```xml
 <dependency>
     <groupId>io.bosonnetwork</groupId>
     <artifactId>boson-director-client</artifactId>
-    <version>${boson.version}</version>
+    <version>3.1.2</version>
 </dependency>
+```
+
+**Gradle (Kotlin DSL)**
+
+```kotlin
+implementation("io.bosonnetwork:boson-director-client:3.1.2")
+```
+
+Using more than one Boson library, import the bill of materials once and leave the versions off the
+dependencies themselves:
+
+```xml
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>io.bosonnetwork</groupId>
+            <artifactId>boson-dependencies</artifactId>
+            <version>3.1.2</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+```
+
+```kotlin
+implementation(platform("io.bosonnetwork:boson-dependencies:3.1.2"))
+implementation("io.bosonnetwork:boson-director-client")
 ```
 
 ### Native transport
