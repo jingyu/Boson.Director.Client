@@ -458,7 +458,8 @@ public class DirectorClient {
 
 	/**
 	 * Registers a device of the user, given the device's key pair. The key signs the registration,
-	 * proving the device holds it; it is not sent.
+	 * proving the device holds it; it is not sent. The user key authorizes it, signing the device id with
+	 * the same nonce: registering a device directly takes the user key, whatever the session.
 	 * <p>
 	 * A device key is registered with one user only: registering a key the Director already knows
 	 * fails with {@link io.bosonnetwork.director.client.exceptions.ConflictException}.
@@ -468,6 +469,7 @@ public class DirectorClient {
 	 * @param appName the name of the app the device runs
 	 * @param passphrase the account passphrase, or {@code null} if the account has none
 	 * @return a future completing when the device is registered
+	 * @throws IllegalStateException if the client has no user key to authorize the device with
 	 */
 	public CompletableFuture<Void> registerDevice(Signature.KeyPair key, String deviceName, String appName,
 			@Nullable String passphrase) {
@@ -475,14 +477,19 @@ public class DirectorClient {
 		Objects.requireNonNull(key, "key");
 		Objects.requireNonNull(deviceName, "deviceName");
 		Objects.requireNonNull(appName, "appName");
+		Signature.KeyPair uk = userKey;
+		if (uk == null)
+			throw new IllegalStateException("Registering a device directly takes the user key, which this client does not have");
 
+		Id deviceId = Id.of(key.publicKey().bytes());
 		byte[] nonce = Random.randomBytes(AUTH_NONCE_SIZE);
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
-		body.put("deviceId", Id.of(key.publicKey().bytes()));
+		body.put("deviceId", deviceId);
 		body.put("deviceName", deviceName);
 		body.put("appName", appName);
 		body.put("nonce", nonce);
 		body.put("deviceSig", key.privateKey().sign(nonce));
+		body.put("userSig", uk.privateKey().sign(deviceAuthorization(deviceId, nonce)));
 		putIfNotNull(body, "passphrase", passphrase);
 
 		return execute(HttpMethod.POST, "/devices", body);
@@ -613,6 +620,15 @@ public class DirectorClient {
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
 		body.put("approved", false);
 		return execute(HttpMethod.PATCH, registrationPath(code.getRegistrationId()), body);
+	}
+
+	// What the user key signs to register a device directly: the device id, then the nonce the device
+	// signed. The Director checks the same bytes.
+	static byte[] deviceAuthorization(Id deviceId, byte[] nonce) {
+		byte[] message = new byte[Id.BYTES + nonce.length];
+		System.arraycopy(deviceId.getBytes(), 0, message, 0, Id.BYTES);
+		System.arraycopy(nonce, 0, message, Id.BYTES, nonce.length);
+		return message;
 	}
 
 	static String registrationPath(String registrationId) {
