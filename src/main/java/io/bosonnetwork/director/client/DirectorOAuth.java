@@ -145,6 +145,20 @@ public class DirectorOAuth {
 	 *         bound to a user
 	 */
 	public CompletableFuture<Id> bindUserIdentity(Signature.KeyPair userKey) {
+		return bindUserIdentity(userKey, null);
+	}
+
+	/**
+	 * Binds a Boson user to the session, as {@link #bindUserIdentity(Signature.KeyPair)} does, for a user who
+	 * may already have a passphrase: linking a sign-in to such a user takes it.
+	 *
+	 * @param userKey the key pair of the user to bind; only signatures leave the device
+	 * @param passphrase the user's passphrase, or {@code null} if the user has none (or is new)
+	 * @return a future completing with the id of the bound user; it fails with
+	 *         {@link io.bosonnetwork.director.client.exceptions.PassphraseRequiredException} if the user has a
+	 *         passphrase and none was given
+	 */
+	public CompletableFuture<Id> bindUserIdentity(Signature.KeyPair userKey, @Nullable String passphrase) {
 		transport.checkOpen();
 		Objects.requireNonNull(userKey, "userKey");
 
@@ -155,6 +169,8 @@ public class DirectorOAuth {
 					// This endpoint takes base58 for both, unlike the byte arrays elsewhere in the API.
 					body.put("publicKey", Base58.encode(userKey.publicKey().bytes()));
 					body.put("signature", Base58.encode(userKey.privateKey().sign(Base58.decode(nonce))));
+					if (passphrase != null)
+						body.put("passphrase", passphrase);
 					return call(HttpMethod.PUT, "/user-identity", body);
 				})
 				.compose(res -> res.json(BoundSession.class))
@@ -201,9 +217,26 @@ public class DirectorOAuth {
 	 * @return a future completing when the sign-in is unlinked
 	 */
 	public CompletableFuture<Void> disconnectIdentity(Id sessionId) {
+		return disconnectIdentity(sessionId, null);
+	}
+
+	/**
+	 * Unlinks one of the OAuth sign-ins of the user bound to this session. Removing a sign-in takes the
+	 * user's passphrase, if the user has one.
+	 *
+	 * @param sessionId the id of the sign-in to unlink, as {@link #listIdentities()} lists it
+	 * @param passphrase the user's passphrase, or {@code null} if the user has none
+	 * @return a future completing when the sign-in is unlinked; it fails with
+	 *         {@link io.bosonnetwork.director.client.exceptions.PassphraseRequiredException} if the user has a
+	 *         passphrase and none was given
+	 */
+	public CompletableFuture<Void> disconnectIdentity(Id sessionId, @Nullable String passphrase) {
 		transport.checkOpen();
 		Objects.requireNonNull(sessionId, "sessionId");
-		return transport.deliver(call(HttpMethod.DELETE, "/identities/" + sessionId.toBase58String(), null)
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		if (passphrase != null)
+			body.put("passphrase", passphrase);
+		return transport.deliver(call(HttpMethod.POST, "/identities/" + sessionId.toBase58String() + "/disconnect", body)
 				.<Void>mapEmpty());
 	}
 
