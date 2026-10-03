@@ -199,8 +199,11 @@ public class DirectorGuest {
 	/**
 	 * Returns the URL that starts an OAuth sign-in with a provider, to open in a browser. After the
 	 * provider signs the user in, the Director redirects the browser to {@code redirectUri}, adding the
-	 * session token as the {@code token} query parameter, or an {@code error} parameter if the sign-in
-	 * failed. Continue the sign-in with a {@link DirectorOAuth} built with that token. Makes no request.
+	 * session token as a {@code token} parameter, or an {@code error} parameter if the sign-in failed:
+	 * in the query for an app's own scheme, in the fragment for a web page. The Director returns only to
+	 * its own site and to the addresses its {@code oauth.allowedRedirects} configuration allows (by
+	 * default Photon's {@code io.bosonnetwork.photon://auth}). Continue the sign-in with a
+	 * {@link DirectorOAuth} built with that token. Makes no request.
 	 *
 	 * @param provider the provider id, as {@link #getProviders()} lists it
 	 * @param redirectUri where the Director sends the browser back to, such as an app's own URI scheme
