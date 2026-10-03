@@ -43,6 +43,7 @@ import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpMethod;
+import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import org.jspecify.annotations.NullUnmarked;
 import org.jspecify.annotations.Nullable;
@@ -642,7 +643,9 @@ public class DirectorClient {
 	 * use {@link #updatePassphrase(String, String)}; calling this instead fails with
 	 * {@link io.bosonnetwork.director.client.exceptions.PassphraseRequiredException}.
 	 * <p>
-	 * There is no passphrase recovery: a forgotten passphrase cannot be reset.
+	 * The user key alone cannot reset a forgotten passphrase. Make recovery codes right after setting it
+	 * ({@link #makeRecoveryCodes(String)}), so that the user can reset it with one through
+	 * {@link DirectorGuest#redeemRecoveryCode(Id, String)}.
 	 *
 	 * @param passphrase the new passphrase
 	 * @return a future completing when the passphrase is set
@@ -694,6 +697,52 @@ public class DirectorClient {
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
 		body.put("passphrase", currentPassphrase);
 		return execute(HttpMethod.POST, "/passphrase/clear", body);
+	}
+
+	/**
+	 * Makes new recovery codes for the passphrase, replacing the user's current ones, used or not. Each
+	 * resets a forgotten passphrase once, without the user key. They are returned only now: the
+	 * Director keeps a hash of each, so show them to the user to save, apart from the user key.
+	 *
+	 * @param passphrase the account passphrase, which the codes reset
+	 * @return a future completing with the codes, as {@code XXXX-XXXX-XXXX-XXXX}; it fails with
+	 *         {@link io.bosonnetwork.director.client.exceptions.ConflictException} if the account has no
+	 *         passphrase, {@link io.bosonnetwork.director.client.exceptions.ForbiddenException} if it is
+	 *         wrong, or {@link io.bosonnetwork.director.client.exceptions.RateLimitException} after too many
+	 *         wrong ones
+	 * @throws IllegalArgumentException if the passphrase is empty
+	 */
+	public CompletableFuture<List<String>> makeRecoveryCodes(String passphrase) {
+		checkOpen();
+		checkPassphrase(passphrase, "passphrase");
+
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		body.put("passphrase", passphrase);
+		return transport.deliver(call(HttpMethod.POST, "/passphrase/recovery-codes", body, true)
+				.compose(res -> res.decode(content -> {
+					JsonArray codes = new JsonObject(content).getJsonArray("recoveryCodes");
+					if (codes == null || codes.isEmpty())
+						throw new IllegalArgumentException("missing 'recoveryCodes'");
+					return codes.stream().map(String.class::cast).toList();
+				})));
+	}
+
+	/**
+	 * Gets the ways the user could reset a forgotten passphrase without the user key: linked OAuth
+	 * sign-ins, passkeys that can recover, and unused recovery codes.
+	 *
+	 * @return a future completing with the recovery methods
+	 */
+	public CompletableFuture<RecoveryMethods> getRecoveryMethods() {
+		checkOpen();
+		return transport.deliver(call(HttpMethod.GET, "/me", null, true)
+				.compose(res -> res.decode(content -> {
+					JsonObject methods = new JsonObject(content).getJsonObject("recoveryMethods");
+					if (methods == null)
+						throw new IllegalArgumentException("missing 'recoveryMethods'");
+					return new RecoveryMethods(methods.getInteger("oauth", 0), methods.getInteger("passkeys", 0),
+							methods.getInteger("recoveryCodes", 0));
+				})));
 	}
 
 	// ---- Profile -------------------------------------------------------------------------------

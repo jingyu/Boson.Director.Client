@@ -224,6 +224,55 @@ public class DirectorGuest {
 				"?redirect_uri=" + encode(redirectUri) + "&scope=" + OAUTH_SCOPE;
 	}
 
+	// ---- Resetting a forgotten passphrase -------------------------------------------------------
+
+	/**
+	 * Uses up one of the user's recovery codes, and gets a reset grant for it: the way back in when the
+	 * passphrase is forgotten. Needs no session. The grant is good once, for a few minutes; set the new
+	 * passphrase with {@link #resetPassphrase(String, String)}.
+	 *
+	 * @param userId the user
+	 * @param code   the recovery code as the user typed it; case, dashes and spaces do not matter
+	 * @return a future completing with the reset grant; it fails with
+	 *         {@link io.bosonnetwork.director.client.exceptions.ForbiddenException} if the code is not one of
+	 *         the user's unused codes, or the user has no passphrase
+	 */
+	public CompletableFuture<String> redeemRecoveryCode(Id userId, String code) {
+		transport.checkOpen();
+		Objects.requireNonNull(userId, "userId");
+		Objects.requireNonNull(code, "code");
+
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		body.put("userId", userId);
+		body.put("code", code);
+		return transport.deliver(transport.call(HttpMethod.POST, "/client/passphrase/reset/code", body, null)
+				.compose(res -> res.stringField("grant")));
+	}
+
+	/**
+	 * Sets a new passphrase with a reset grant, which is used up. The Director records the reset.
+	 *
+	 * @param grant      the reset grant, from {@link #redeemRecoveryCode(Id, String)} or another recovery
+	 *                   method
+	 * @param passphrase the new passphrase: at least 8 characters, at least 5 different
+	 * @return a future completing when the passphrase is reset; it fails with
+	 *         {@link io.bosonnetwork.director.client.exceptions.UnauthorizedException} if the grant is used,
+	 *         expired or unknown, or
+	 *         {@link io.bosonnetwork.director.client.exceptions.InvalidRequestException} if the passphrase
+	 *         is too weak (the grant stays good)
+	 */
+	public CompletableFuture<Void> resetPassphrase(String grant, String passphrase) {
+		transport.checkOpen();
+		Objects.requireNonNull(grant, "grant");
+		Objects.requireNonNull(passphrase, "passphrase");
+
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		body.put("grant", grant);
+		body.put("passphrase", passphrase);
+		return transport.deliver(transport.call(HttpMethod.POST, "/client/passphrase/reset", body, null)
+				.<Void>mapEmpty());
+	}
+
 	// ---- Joining an account from a new device --------------------------------------------------
 
 	/**
