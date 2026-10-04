@@ -134,7 +134,7 @@ public class DirectorAdmin {
 	private final URL directorUrl;
 	// The configured node id, or the one the Director reported once looked up.
 	private volatile @Nullable Id nodeId;
-	private final CryptoIdentity identity;
+	private final Id userId;
 
 	private final DirectorTransport transport;
 	private final AccessTokenSource tokens;
@@ -145,17 +145,37 @@ public class DirectorAdmin {
 		Vertx vertx = Objects.requireNonNull(builder.vertx, "Vert.x instance must be set");
 		this.directorUrl = Objects.requireNonNull(builder.directorUrl, "directorUrl must be set");
 		this.nodeId = builder.nodeId;
-		this.identity = new CryptoIdentity(Objects.requireNonNull(builder.userKey, "userKey must be set"));
-
 		this.transport = new DirectorTransport(vertx, directorUrl, ADMIN_API, nodeId, builder.resolveToAddress, builder.callbackExecutor, log);
-		// Issued by the administrator for itself: the Director accepts a token whose issuer is its
-		// subject, and grants the admin role from the user record, not from the scope claim.
-		this.tokens = SelfIssuedAccessTokens.builder(identity)
-				.subject(identity.getId())
-				.scope(AccessScope.ADMIN)
-				.audience(this::resolveNodeId)
-				.logger(log)
-				.build();
+		if (builder.accessToken != null) {
+			// A token the administrator issued beforehand: the client holds no key, only the token, and
+			// stops working when it expires.
+			if (builder.userKey != null)
+				throw new IllegalArgumentException("Set the user key or an access token, not both");
+			this.userId = Objects.requireNonNull(builder.tokenUserId, "userId");
+			String token = builder.accessToken;
+			this.tokens = new AccessTokenSource() {
+				@Override
+				public Future<String> token() {
+					return Future.succeededFuture(token);
+				}
+
+				@Override
+				public boolean rejected(String rejected, java.time.@Nullable Instant serverDate) {
+					return false;
+				}
+			};
+		} else {
+			CryptoIdentity identity = new CryptoIdentity(Objects.requireNonNull(builder.userKey, "userKey must be set"));
+			this.userId = identity.getId();
+			// Issued by the administrator for itself: the Director accepts a token whose issuer is its
+			// subject, and grants the admin role from the user record, not from the scope claim.
+			this.tokens = SelfIssuedAccessTokens.builder(identity)
+					.subject(identity.getId())
+					.scope(AccessScope.ADMIN)
+					.audience(this::resolveNodeId)
+					.logger(log)
+					.build();
+		}
 	}
 
 	/**
@@ -165,6 +185,33 @@ public class DirectorAdmin {
 	 */
 	public static Builder builder() {
 		return new Builder();
+	}
+
+	/**
+	 * Issues an admin access token with the administrator's key, for a client built with
+	 * {@link Builder#accessToken(Id, String)}: an app can then use the key once, drop it, and administer
+	 * the node until the token expires. The token is bound to the node.
+	 *
+	 * @param userKey the administrator's key pair
+	 * @param nodeId the id of the node the token is for
+	 * @param lifetime how long the token is valid, at most an hour (the Director refuses longer ones)
+	 * @return the token
+	 */
+	public static String issueAccessToken(Signature.KeyPair userKey, Id nodeId, java.time.Duration lifetime) {
+		Objects.requireNonNull(userKey, "userKey");
+		Objects.requireNonNull(nodeId, "nodeId");
+		if (lifetime.isNegative() || lifetime.isZero() || lifetime.compareTo(java.time.Duration.ofHours(1)) > 0)
+			throw new IllegalArgumentException("An admin access token lives up to an hour");
+		CryptoIdentity identity = new CryptoIdentity(userKey);
+		return SelfIssuedAccessTokens.builder(identity)
+				.subject(identity.getId())
+				.scope(AccessScope.ADMIN)
+				.audience(nodeId)
+				.lifetime(lifetime)
+				.logger(log)
+				.build()
+				.token()
+				.result();
 	}
 
 	/**
@@ -182,7 +229,7 @@ public class DirectorAdmin {
 	 * @return the user id
 	 */
 	public Id getUserId() {
-		return identity.getId();
+		return userId;
 	}
 
 	/**
@@ -1366,6 +1413,8 @@ public class DirectorAdmin {
 	@NullUnmarked
 	public static class Builder extends DirectorBuilder<Builder> {
 		private Signature.KeyPair userKey;
+		private Id tokenUserId;
+		private String accessToken;
 
 		private Builder() {
 		}
@@ -1406,10 +1455,26 @@ public class DirectorAdmin {
 		}
 
 		/**
+		 * Authenticates with a token the administrator issued beforehand with
+		 * {@link DirectorAdmin#issueAccessToken(Signature.KeyPair, Id, java.time.Duration)}, instead of the
+		 * key: the client holds no key, and stops working when the token expires.
+		 *
+		 * @param userId the administrator's user id, the token's subject
+		 * @param token the access token
+		 * @return this builder
+		 */
+		public Builder accessToken(Id userId, String token) {
+			this.tokenUserId = Objects.requireNonNull(userId, "userId");
+			this.accessToken = Objects.requireNonNull(token, "token");
+			return this;
+		}
+
+		/**
 		 * Validates the configuration and builds the client.
 		 *
 		 * @return the client, ready to use
-		 * @throws IllegalStateException if Vert.x, the Director URL or the user key is missing
+		 * @throws IllegalStateException if Vert.x, the Director URL, or the user key or access token is
+		 *         missing, or both are set
 		 */
 		public DirectorAdmin build() {
 			try {

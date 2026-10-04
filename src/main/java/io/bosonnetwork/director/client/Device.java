@@ -35,10 +35,18 @@ import io.bosonnetwork.Id;
  * A device registered to a user, as listed by {@link DirectorClient#listDevices()}. Immutable.
  */
 public class Device {
+	/** The {@linkplain #getKind() kind} of a device that is an app keeping its own device key. */
+	public static final String KIND_APP = "app";
+	/** The {@linkplain #getKind() kind} of a browser that derives its device key from a passkey. */
+	public static final String KIND_PASSKEY = "passkey";
+
 	private final Id id;
 	private final Id userId;
 	private final String name;
 	private final String app;
+	private final String kind;
+	private final boolean admin;
+	private final boolean recovery;
 	private final long createdAt;
 	private final long updatedAt;
 	private final long lastSeen;
@@ -49,6 +57,9 @@ public class Device {
 			@JsonProperty(value = "userId", required = true) Id userId,
 			@JsonProperty("name") @Nullable String name,
 			@JsonProperty("app") @Nullable String app,
+			@JsonProperty("kind") @Nullable String kind,
+			@JsonProperty("admin") boolean admin,
+			@JsonProperty("recovery") boolean recovery,
 			@JsonProperty("createdAt") long createdAt,
 			@JsonProperty("updatedAt") long updatedAt,
 			@JsonProperty("lastSeen") long lastSeen,
@@ -58,6 +69,10 @@ public class Device {
 		// The Director leaves empty values out of the JSON.
 		this.name = name != null ? name : "";
 		this.app = app != null ? app : "";
+		// A Director from before device kinds knew only apps.
+		this.kind = kind != null ? kind : KIND_APP;
+		this.admin = admin;
+		this.recovery = recovery;
 		this.createdAt = createdAt;
 		this.updatedAt = updatedAt;
 		this.lastSeen = lastSeen;
@@ -98,6 +113,35 @@ public class Device {
 	 */
 	public String getApp() {
 		return app;
+	}
+
+	/**
+	 * Returns what holds the device's key: {@link #KIND_APP} or {@link #KIND_PASSKEY}.
+	 *
+	 * @return the device kind
+	 */
+	public String getKind() {
+		return kind;
+	}
+
+	/**
+	 * Returns whether the user key made this device an administrator's device: it acts as an administrator
+	 * as long as its user is one.
+	 *
+	 * @return whether the device is admin-flagged
+	 */
+	public boolean isAdmin() {
+		return admin;
+	}
+
+	/**
+	 * Returns whether the device can reset a forgotten passphrase: a passkey that registered its WebAuthn
+	 * credential.
+	 *
+	 * @return whether the device is a recovery method
+	 */
+	public boolean isRecoveryMethod() {
+		return recovery;
 	}
 
 	/**

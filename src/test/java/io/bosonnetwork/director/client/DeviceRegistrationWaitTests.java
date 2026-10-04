@@ -55,7 +55,7 @@ public class DeviceRegistrationWaitTests {
 	private final Signature.KeyPair userKey = Signature.KeyPair.random();
 	private final Id userId = Id.of(userKey.publicKey().bytes());
 	private final DeviceRegistration registration =
-			new DeviceRegistration("registration", Signature.KeyPair.random(), CryptoBox.KeyPair.random());
+			new DeviceRegistration("registration", Signature.KeyPair.random(), CryptoBox.KeyPair.random(), true);
 
 	private Vertx vertx;
 	private HttpServer server;
@@ -90,7 +90,7 @@ public class DeviceRegistrationWaitTests {
 			DeviceApproval approval = auth.finishDeviceRegistration(registration)
 					.get(ANSWER_DELAY + TimeUnit.SECONDS.toMillis(30), TimeUnit.MILLISECONDS);
 			assertEquals(userId, approval.getUserId());
-			assertArrayEquals(userKey.privateKey().bytes(), approval.getUserKey().privateKey().bytes());
+			assertArrayEquals(userKey.privateKey().bytes(), approval.getUserKey().orElseThrow().privateKey().bytes());
 		} finally {
 			auth.close().get(10, TimeUnit.SECONDS);
 		}

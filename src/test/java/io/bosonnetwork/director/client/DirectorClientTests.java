@@ -137,13 +137,14 @@ public class DirectorClientTests {
 	}
 
 	@Test
-	void approvingADeviceNeedsTheUserKey() throws Exception {
-		// Acting as a device: there is no user key to hand over.
+	void approvingAnAdministratorsDeviceNeedsTheUserKey() throws Exception {
+		// Acting as a device: there is no user key to sign the new device with.
 		DirectorClient device = builder().userId(Id.of(userKey.publicKey().bytes())).deviceKey(deviceKey).build();
 		try {
 			PairingCode code = new DeviceRegistration("registration", Signature.KeyPair.random(),
 					io.bosonnetwork.crypto.CryptoBox.KeyPair.random()).getPairingCode();
-			assertThrows(IllegalStateException.class, () -> device.approveDeviceRegistration(code));
+			assertThrows(IllegalStateException.class, () -> device.approveDeviceRegistration(code, null, true));
+			assertThrows(IllegalStateException.class, () -> device.approveDeviceRegistration("registration", null, true));
 		} finally {
 			device.close().get(10, TimeUnit.SECONDS);
 		}
@@ -162,8 +163,8 @@ public class DirectorClientTests {
 			assertThrows(NullPointerException.class, () -> client.removeDevice(null));
 			assertThrows(NullPointerException.class, () -> client.getUserProfile(null));
 			assertThrows(NullPointerException.class, () -> client.getUserAvatar(null));
-			assertThrows(NullPointerException.class, () -> client.getDeviceRegistration(null));
-			assertThrows(NullPointerException.class, () -> client.denyDeviceRegistration(null));
+			assertThrows(NullPointerException.class, () -> client.getDeviceRegistration((PairingCode) null));
+			assertThrows(NullPointerException.class, () -> client.denyDeviceRegistration((PairingCode) null));
 			assertThrows(NullPointerException.class, () -> client.refreshUserAvatar(Id.random(), null));
 		} finally {
 			client.close().get(10, TimeUnit.SECONDS);

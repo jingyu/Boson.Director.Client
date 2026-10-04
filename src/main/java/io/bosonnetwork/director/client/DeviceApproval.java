@@ -23,6 +23,9 @@
 package io.bosonnetwork.director.client;
 
 import java.util.Objects;
+import java.util.Optional;
+
+import org.jspecify.annotations.Nullable;
 
 import io.bosonnetwork.Id;
 import io.bosonnetwork.crypto.Signature;
@@ -30,18 +33,18 @@ import io.bosonnetwork.crypto.Signature;
 /**
  * The outcome of an approved device registration, as the new device receives it from
  * {@link DirectorGuest#finishDeviceRegistration(DeviceRegistration)}: the user the device now belongs to,
- * and that user's key, handed over by the approving device. Immutable.
+ * and, if the device asked for it, that user's key, handed over by the approving device. Immutable.
  * <p>
  * The approving device sealed the key to the new device's registration, so the Director relayed it
  * without being able to read it; it is opened here, and checked to be the named user's key.
  */
 public class DeviceApproval {
 	private final Id userId;
-	private final Signature.KeyPair userKey;
+	private final Signature.@Nullable KeyPair userKey;
 
-	DeviceApproval(Id userId, Signature.KeyPair userKey) {
+	DeviceApproval(Id userId, Signature.@Nullable KeyPair userKey) {
 		this.userId = Objects.requireNonNull(userId, "userId");
-		this.userKey = Objects.requireNonNull(userKey, "userKey");
+		this.userKey = userKey;
 	}
 
 	/**
@@ -54,12 +57,13 @@ public class DeviceApproval {
 	}
 
 	/**
-	 * Returns the user's key pair, to act as the user with a {@link DirectorClient}.
+	 * Returns the user's key pair, to act as the user with a {@link DirectorClient}. It is there only when
+	 * the registration asked for it ({@code wantsUserKey}).
 	 *
-	 * @return the user key pair
+	 * @return the user key pair, if it was handed over
 	 */
-	public Signature.KeyPair getUserKey() {
-		return userKey;
+	public Optional<Signature.KeyPair> getUserKey() {
+		return Optional.ofNullable(userKey);
 	}
 
 	@Override

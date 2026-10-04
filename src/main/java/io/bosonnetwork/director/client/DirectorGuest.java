@@ -202,7 +202,8 @@ public class DirectorGuest {
 	 * session token as a {@code token} parameter, or an {@code error} parameter if the sign-in failed:
 	 * in the query for an app's own scheme, in the fragment for a web page. The Director returns only to
 	 * its own site and to the addresses its {@code oauth.allowedRedirects} configuration allows (by
-	 * default Photon's {@code io.bosonnetwork.photon://auth}). Continue the sign-in with a
+	 * default Photon's {@code io.bosonnetwork.photon://auth} and Boson Identity's App Link
+	 * {@code https://bosonnetwork.io/identity/auth}). Continue the sign-in with a
 	 * {@link DirectorOAuth} built with that token. Makes no request.
 	 *
 	 * @param provider the provider id, as {@link #getProviders()} lists it
@@ -225,6 +226,23 @@ public class DirectorGuest {
 	}
 
 	// ---- Resetting a forgotten passphrase -------------------------------------------------------
+
+	/**
+	 * Returns the URL that resets a forgotten passphrase through a linked OAuth account, to open in a
+	 * browser. The provider vouches for an account linked to the user, and the Director sends the browser
+	 * to {@code redirectUri} with a reset grant ({@code #grant=...}), or {@code #error=reset_failed}, in the
+	 * fragment. Set the new passphrase with {@link #resetPassphrase(String, String)}. The Director returns
+	 * a grant only to its own site or an allowed {@code https} address (an App Link, such as Boson
+	 * Identity's), never to an app's own scheme. Makes no request.
+	 *
+	 * @param provider the provider id, as {@link #getProviders()} lists it
+	 * @param redirectUri where the Director sends the browser back to
+	 * @return the URL to open
+	 * @throws IllegalArgumentException if the provider or the redirect URI is empty
+	 */
+	public String passphraseResetUrl(String provider, String redirectUri) {
+		return authorizeUrl(provider, redirectUri) + "&purpose=passphrase-reset";
+	}
 
 	/**
 	 * Uses up one of the user's recovery codes, and gets a reset grant for it: the way back in when the
@@ -291,6 +309,25 @@ public class DirectorGuest {
 	 */
 	public CompletableFuture<DeviceRegistration> requestDeviceRegistration(Signature.KeyPair deviceKey,
 			String deviceName, String appName) {
+		return requestDeviceRegistration(deviceKey, deviceName, appName, false);
+	}
+
+	/**
+	 * Asks to join a user's account with a new device, as
+	 * {@link #requestDeviceRegistration(Signature.KeyPair, String, String)} does, saying whether the device
+	 * needs the user key. An app that acts as the user itself (Photon, for one) asks for it; approving the
+	 * request then hands the key over, sealed to the pairing code. A device that does not ask never gets it.
+	 *
+	 * @param deviceKey the key pair of the new device; it signs the request and is not sent
+	 * @param deviceName a name for the device, shown to the user
+	 * @param appName the name of the app the device runs
+	 * @param wantsUserKey whether the device needs the user key
+	 * @return a future completing with the pending registration; it fails with
+	 *         {@link io.bosonnetwork.director.client.exceptions.ConflictException} if the device is already
+	 *         registered
+	 */
+	public CompletableFuture<DeviceRegistration> requestDeviceRegistration(Signature.KeyPair deviceKey,
+			String deviceName, String appName, boolean wantsUserKey) {
 		transport.checkOpen();
 		Objects.requireNonNull(deviceKey, "deviceKey");
 		Objects.requireNonNull(deviceName, "deviceName");
@@ -299,15 +336,18 @@ public class DirectorGuest {
 		Map<String, @Nullable Object> body = signedByDevice(deviceKey);
 		body.put("deviceName", deviceName);
 		body.put("appName", appName);
+		if (wantsUserKey)
+			body.put("wantsUserKey", true);
 		return transport.deliver(transport.call(HttpMethod.POST, "/client/devices/registrations", body, null)
 				.compose(res -> res.stringField("registrationId"))
-				.map(id -> new DeviceRegistration(id, deviceKey, CryptoBox.KeyPair.random())));
+				.map(id -> new DeviceRegistration(id, deviceKey, CryptoBox.KeyPair.random(), wantsUserKey)));
 	}
 
 	/**
 	 * Waits for the user to answer a registration request. The Director holds this call until the request
 	 * is approved, denied or expired, so it may take minutes to complete. On approval the device is
-	 * registered to the user, and receives the user key the approving device sealed to the request.
+	 * registered to the user, and, if it asked for it, receives the user key the approving device sealed
+	 * to the request.
 	 *
 	 * @param registration the pending registration
 	 * @return a future completing with the approval; it fails with {@link RegistrationDeniedException} if the
@@ -327,6 +367,54 @@ public class DirectorGuest {
 		return transport.deliver(approval);
 	}
 
+	/**
+	 * Asks to be signed in by the user's Boson Identity app, as a web page does: show the returned
+	 * {@linkplain PendingSignIn#getCode() code} as a QR code with its {@linkplain PendingSignIn#getNumber()
+	 * number}, then collect the session with {@link #finishSignIn(PendingSignIn)}. The request expires after
+	 * two minutes.
+	 *
+	 * @param app what to sign in to: {@link SignInRequest#APP_PORTAL} or {@link SignInRequest#APP_ADMIN}
+	 * @return a future completing with the pending sign-in
+	 */
+	public CompletableFuture<PendingSignIn> requestSignIn(String app) {
+		transport.checkOpen();
+		Objects.requireNonNull(app, "app");
+		byte[] secret = Random.randomBytes(32);
+		byte[] hash;
+		try {
+			hash = java.security.MessageDigest.getInstance("SHA-256").digest(secret);
+		} catch (java.security.NoSuchAlgorithmException e) {
+			throw new IllegalStateException(e);
+		}
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		body.put("app", app);
+		body.put("secretHash", hash);
+		return transport.deliver(transport.call(HttpMethod.POST, "/client/auth/requests", body, null)
+				.compose(res -> res.decode(content -> {
+					JsonObject json = new JsonObject(content);
+					return new PendingSignIn(requiredString(json, "requestId"), json.getInteger("number"), secret);
+				})));
+	}
+
+	/**
+	 * Waits for the user to answer a sign-in request in the app. The Director holds this call until the
+	 * request is answered or expires.
+	 *
+	 * @param signIn the pending sign-in
+	 * @return a future completing with the session token; it fails with {@link RegistrationDeniedException}
+	 *         if the user refused, or {@link RegistrationExpiredException} if it expired
+	 */
+	public CompletableFuture<String> finishSignIn(PendingSignIn signIn) {
+		transport.checkOpen();
+		Objects.requireNonNull(signIn, "signIn");
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		body.put("secret", signIn.secret());
+		return transport.deliver(transport.call(HttpMethod.POST,
+						"/client" + DirectorClient.signInPath(signIn.getRequestId()), body, null, REGISTRATION_WAIT)
+				.recover(e -> Future.failedFuture(registrationFailure(e)))
+				.compose(res -> res.stringField("token")));
+	}
+
 	// The statuses the Director finishes a registration with mean other things elsewhere: typed here only.
 	private static Throwable registrationFailure(Throwable e) {
 		if (e instanceof DirectorException de && !(de instanceof NotFoundException)) {
@@ -338,12 +426,19 @@ public class DirectorGuest {
 		return e;
 	}
 
-	// Opens the user key sealed to the registration, and checks it is the key of the user the Director
-	// names: a key that is not would make the device act as someone else.
+	// Opens the user key sealed to the registration, if one came, and checks it is the key of the user the
+	// Director names: a key that is not would make the device act as someone else.
 	private static DeviceApproval openApproval(DeviceRegistration registration, JsonObject json)
 			throws CryptoException {
 		Id userId = Id.of(requiredString(json, "userId"));
-		byte[] sealed = Json.BASE64_DECODER.decode(requiredString(json, "userPrivateKey"));
+		String sealedText = json.getString("userPrivateKey");
+		if (sealedText == null) {
+			// A device that needs the user key can't work without it: approved without it is a failure.
+			if (registration.wantsUserKey())
+				throw new IllegalStateException("the registration was approved without the user key it asked for");
+			return new DeviceApproval(userId, null);
+		}
+		byte[] sealed = Json.BASE64_DECODER.decode(sealedText);
 		CryptoBox.KeyPair sealingKey = registration.sealingKey();
 		byte[] privateKey = CryptoBox.decryptSealed(sealed, sealingKey.publicKey(), sealingKey.privateKey());
 		Signature.KeyPair userKey = Signature.KeyPair.fromPrivateKey(privateKey);

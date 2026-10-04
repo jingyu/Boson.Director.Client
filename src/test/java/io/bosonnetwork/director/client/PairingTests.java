@@ -24,8 +24,11 @@ package io.bosonnetwork.director.client;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -66,7 +69,10 @@ public class PairingTests {
 	private Vertx vertx;
 	private HttpServer server;
 
-	// The stub Director's registration: the key relayed by the approval, and how it finishes.
+	// The stub Director's registration: the request as the new device made it, the approval's body, the
+	// key it relayed, and how the registration finishes.
+	private final AtomicReference<JsonObject> request = new AtomicReference<>();
+	private final AtomicReference<JsonObject> approvalBody = new AtomicReference<>();
 	private final AtomicReference<String> relayedKey = new AtomicReference<>();
 	private volatile int finishStatus;
 	private volatile Id finishUserId;
@@ -79,9 +85,23 @@ public class PairingTests {
 			if (path.endsWith("/client/id")) {
 				req.response().putHeader("Content-Type", "application/json").end("{\"id\":\"" + nodeId + "\"}");
 			} else if (req.method() == HttpMethod.POST && path.endsWith("/client/devices/registrations")) {
+				request.set(body.toJsonObject());
 				req.response().setStatusCode(201).putHeader("Content-Type", "application/json")
 						.end("{\"registrationId\":\"reg-1\"}");
+			} else if (req.method() == HttpMethod.GET && path.endsWith("/reg-1")) {
+				JsonObject made = request.get();
+				req.response().putHeader("Content-Type", "application/json").end(new JsonObject()
+						.put("deviceId", made.getString("deviceId"))
+						.put("deviceName", made.getString("deviceName"))
+						.put("appName", made.getString("appName"))
+						.put("kind", "app")
+						.put("wantsUserKey", made.getBoolean("wantsUserKey", false))
+						.put("nonce", made.getString("nonce"))
+						.put("requestedFrom", "192.0.2.7")
+						.put("createdAt", 1000L)
+						.put("expiresAt", 181000L).toBuffer());
 			} else if (req.method() == HttpMethod.PATCH) {
+				approvalBody.set(body.toJsonObject());
 				relayedKey.set(body.toJsonObject().getString("userPrivateKey"));
 				req.response().setStatusCode(204).end();
 			} else if (req.method() == HttpMethod.POST && path.endsWith("/reg-1")) {
@@ -89,9 +109,10 @@ public class PairingTests {
 					req.response().setStatusCode(finishStatus).end("Refused - by the stub");
 					return;
 				}
-				req.response().setStatusCode(201).putHeader("Content-Type", "application/json")
-						.end(new JsonObject().put("userId", finishUserId.toString())
-								.put("userPrivateKey", relayedKey.get()).toBuffer());
+				JsonObject finished = new JsonObject().put("userId", finishUserId.toString());
+				if (relayedKey.get() != null)
+					finished.put("userPrivateKey", relayedKey.get());
+				req.response().setStatusCode(201).putHeader("Content-Type", "application/json").end(finished.toBuffer());
 			} else {
 				req.response().setStatusCode(404).end("Not Found");
 			}
@@ -105,6 +126,8 @@ public class PairingTests {
 
 	@BeforeEach
 	void reset() {
+		request.set(null);
+		approvalBody.set(null);
 		relayedKey.set(null);
 		finishStatus = 201;
 		finishUserId = userId;
@@ -143,8 +166,9 @@ public class PairingTests {
 		DirectorClient approver = DirectorClient.builder().vertx(vertx).directorUrl(url()).userKey(userKey).build();
 		try {
 			DeviceRegistration registration = await(Future.fromCompletionStage(
-					newDevice.requestDeviceRegistration(Signature.KeyPair.random(), "Phone", "Tests")));
+					newDevice.requestDeviceRegistration(Signature.KeyPair.random(), "Phone", "Tests", true)));
 			assertEquals("reg-1", registration.getRegistrationId());
+			assertTrue(request.get().getBoolean("wantsUserKey"));
 
 			// The approving device reads the code the new device shows, as text.
 			PairingCode scanned = PairingCode.parse(registration.getPairingCode().toString());
@@ -156,10 +180,116 @@ public class PairingTests {
 
 			DeviceApproval approval = newDevice.finishDeviceRegistration(registration).get(30, TimeUnit.SECONDS);
 			assertEquals(userId, approval.getUserId());
-			assertArrayEquals(userKey.privateKey().bytes(), approval.getUserKey().privateKey().bytes());
+			assertArrayEquals(userKey.privateKey().bytes(), approval.getUserKey().orElseThrow().privateKey().bytes());
 		} finally {
 			newDevice.close().get(10, TimeUnit.SECONDS);
 			approver.close().get(10, TimeUnit.SECONDS);
+		}
+	}
+
+	@Test
+	void aDeviceThatDidNotAskGetsNoKey() throws Exception {
+		DirectorGuest newDevice = DirectorGuest.builder().vertx(vertx).directorUrl(url()).build();
+		DirectorClient approver = DirectorClient.builder().vertx(vertx).directorUrl(url()).userKey(userKey).build();
+		try {
+			DeviceRegistration registration = newDevice.requestDeviceRegistration(Signature.KeyPair.random(),
+					"Laptop", "boson-cli").get(30, TimeUnit.SECONDS);
+			assertFalse(request.get().containsKey("wantsUserKey"));
+
+			PendingDevice pending = approver.getDeviceRegistration(registration.getPairingCode())
+					.get(30, TimeUnit.SECONDS).orElseThrow();
+			assertFalse(pending.wantsUserKey());
+			assertEquals("Laptop", pending.getDeviceName());
+			assertEquals("192.0.2.7", pending.getRequestedFrom().orElseThrow());
+			assertEquals(181000L, pending.getExpiresAt());
+
+			// An id is enough when no key goes over.
+			approver.approveDeviceRegistration(registration.getRegistrationId(), null, false).get(30, TimeUnit.SECONDS);
+			assertFalse(approvalBody.get().containsKey("userPrivateKey"));
+			assertFalse(approvalBody.get().containsKey("admin"));
+
+			DeviceApproval approval = newDevice.finishDeviceRegistration(registration).get(30, TimeUnit.SECONDS);
+			assertEquals(userId, approval.getUserId());
+			assertTrue(approval.getUserKey().isEmpty());
+		} finally {
+			newDevice.close().get(10, TimeUnit.SECONDS);
+			approver.close().get(10, TimeUnit.SECONDS);
+		}
+	}
+
+	@Test
+	void aDeviceThatWantsTheKeyNeedsThePairingCode() throws Exception {
+		DirectorGuest newDevice = DirectorGuest.builder().vertx(vertx).directorUrl(url()).build();
+		DirectorClient approver = DirectorClient.builder().vertx(vertx).directorUrl(url()).userKey(userKey).build();
+		try {
+			DeviceRegistration registration = newDevice.requestDeviceRegistration(Signature.KeyPair.random(),
+					"Phone", "Photon", true).get(30, TimeUnit.SECONDS);
+			ExecutionException e = assertThrows(ExecutionException.class, () -> approver
+					.approveDeviceRegistration(registration.getRegistrationId(), null, false).get(30, TimeUnit.SECONDS));
+			assertInstanceOf(IllegalStateException.class, e.getCause());
+
+			// A client without the user key can't hand it over, even with the code.
+			DirectorClient keyless = DirectorClient.builder().vertx(vertx).directorUrl(url()).userId(userId)
+					.deviceKey(Signature.KeyPair.random()).build();
+			try {
+				ExecutionException noKey = assertThrows(ExecutionException.class, () -> keyless
+						.approveDeviceRegistration(registration.getPairingCode()).get(30, TimeUnit.SECONDS));
+				assertInstanceOf(IllegalStateException.class, noKey.getCause());
+			} finally {
+				keyless.close().get(10, TimeUnit.SECONDS);
+			}
+			assertNull(approvalBody.get(), "nothing was sent");
+		} finally {
+			newDevice.close().get(10, TimeUnit.SECONDS);
+			approver.close().get(10, TimeUnit.SECONDS);
+		}
+	}
+
+	@Test
+	void anAdminApprovalSignsTheDeviceWithItsNonce() throws Exception {
+		DirectorGuest newDevice = DirectorGuest.builder().vertx(vertx).directorUrl(url()).build();
+		DirectorClient approver = DirectorClient.builder().vertx(vertx).directorUrl(url()).userKey(userKey).build();
+		try {
+			Signature.KeyPair deviceKey = Signature.KeyPair.random();
+			DeviceRegistration registration = newDevice.requestDeviceRegistration(deviceKey, "Browser", "Portal")
+					.get(30, TimeUnit.SECONDS);
+			approver.approveDeviceRegistration(registration.getPairingCode(), "pass phrase", true).get(30, TimeUnit.SECONDS);
+
+			JsonObject body = approvalBody.get();
+			assertTrue(body.getBoolean("admin"));
+			assertEquals("pass phrase", body.getString("passphrase"));
+			byte[] nonce = Base64.getUrlDecoder().decode(request.get().getString("nonce"));
+			byte[] userSig = Base64.getUrlDecoder().decode(body.getString("userSig"));
+			assertTrue(userKey.publicKey().verify(DirectorClient.deviceAuthorization(
+					Id.of(deviceKey.publicKey().bytes()), nonce), userSig));
+
+			// Without the user key there is nothing to sign with.
+			DirectorClient keyless = DirectorClient.builder().vertx(vertx).directorUrl(url()).userId(userId)
+					.deviceKey(Signature.KeyPair.random()).build();
+			try {
+				assertThrows(IllegalStateException.class,
+						() -> keyless.approveDeviceRegistration(registration.getPairingCode(), null, true));
+			} finally {
+				keyless.close().get(10, TimeUnit.SECONDS);
+			}
+		} finally {
+			newDevice.close().get(10, TimeUnit.SECONDS);
+			approver.close().get(10, TimeUnit.SECONDS);
+		}
+	}
+
+	@Test
+	void aDeviceThatAskedForTheKeyFailsWithoutIt() throws Exception {
+		DirectorGuest newDevice = DirectorGuest.builder().vertx(vertx).directorUrl(url()).build();
+		try {
+			DeviceRegistration registration = newDevice.requestDeviceRegistration(Signature.KeyPair.random(),
+					"Phone", "Photon", true).get(30, TimeUnit.SECONDS);
+			// The Director (or something in between) finishes without the key the device asked for.
+			ExecutionException e = assertThrows(ExecutionException.class,
+					() -> newDevice.finishDeviceRegistration(registration).get(30, TimeUnit.SECONDS));
+			assertNotNull(e.getCause());
+		} finally {
+			newDevice.close().get(10, TimeUnit.SECONDS);
 		}
 	}
 
@@ -169,7 +299,7 @@ public class PairingTests {
 		DirectorGuest newDevice = DirectorGuest.builder().vertx(vertx).directorUrl(url()).build();
 		try {
 			DeviceRegistration registration = newDevice.requestDeviceRegistration(Signature.KeyPair.random(),
-					"Phone", "Tests").get(30, TimeUnit.SECONDS);
+					"Phone", "Tests", true).get(30, TimeUnit.SECONDS);
 			byte[] sealed = CryptoBox.encryptSealed(userKey.privateKey().bytes(),
 					registration.getPairingCode().publicKey());
 			relayedKey.set(Base64.getUrlEncoder().withoutPadding().encodeToString(sealed));
@@ -186,7 +316,7 @@ public class PairingTests {
 		DirectorClient approver = DirectorClient.builder().vertx(vertx).directorUrl(url()).userKey(userKey).build();
 		try {
 			DeviceRegistration registration = newDevice.requestDeviceRegistration(Signature.KeyPair.random(),
-					"Phone", "Tests").get(30, TimeUnit.SECONDS);
+					"Phone", "Tests", true).get(30, TimeUnit.SECONDS);
 			approver.approveDeviceRegistration(registration.getPairingCode()).get(30, TimeUnit.SECONDS);
 
 			// The Director names a user the relayed key does not belong to.

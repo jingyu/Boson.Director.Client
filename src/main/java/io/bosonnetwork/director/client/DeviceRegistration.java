@@ -42,8 +42,15 @@ public final class DeviceRegistration {
 	private final Signature.KeyPair deviceKey;
 	private final CryptoBox.KeyPair sealingKey;
 	private final PairingCode pairingCode;
+	private final boolean wantsUserKey;
 
 	DeviceRegistration(String registrationId, Signature.KeyPair deviceKey, CryptoBox.KeyPair sealingKey) {
+		this(registrationId, deviceKey, sealingKey, false);
+	}
+
+	DeviceRegistration(String registrationId, Signature.KeyPair deviceKey, CryptoBox.KeyPair sealingKey,
+			boolean wantsUserKey) {
+		this.wantsUserKey = wantsUserKey;
 		this.registrationId = Objects.requireNonNull(registrationId, "registrationId");
 		this.deviceKey = Objects.requireNonNull(deviceKey, "deviceKey");
 		this.sealingKey = Objects.requireNonNull(sealingKey, "sealingKey");
@@ -75,6 +82,15 @@ public final class DeviceRegistration {
 	 */
 	public PairingCode getPairingCode() {
 		return pairingCode;
+	}
+
+	/**
+	 * Returns whether the device asked for the user key.
+	 *
+	 * @return whether the device wants the user key
+	 */
+	public boolean wantsUserKey() {
+		return wantsUserKey;
 	}
 
 	Signature.KeyPair deviceKey() {

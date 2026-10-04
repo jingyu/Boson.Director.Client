@@ -37,7 +37,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
@@ -151,6 +154,7 @@ import io.bosonnetwork.web.client.SelfIssuedAccessTokens;
 public class DirectorClient {
 	// Every client API lives under this path of the Director API.
 	private static final String CLIENT_API = "/client";
+	private static final String AUTH_API = "/auth";
 
 	// Size of the random nonce signed to obtain an access token.
 	private static final int AUTH_NONCE_SIZE = 32;
@@ -174,6 +178,10 @@ public class DirectorClient {
 	private final @Nullable Id deviceId;
 
 	private final DirectorTransport transport;
+	// The auth API, for the user's linked OAuth sign-ins: made on first use, with the same tokens.
+	private @Nullable DirectorTransport authTransport;
+	private final @Nullable InetSocketAddress resolveToAddress;
+	private final @Nullable Executor callbackExecutor;
 	private final AccessTokenSource tokens;
 
 	private static final Logger log = LoggerFactory.getLogger(DirectorClient.class);
@@ -192,7 +200,9 @@ public class DirectorClient {
 		this.deviceKey = builder.deviceKey;
 		this.deviceId = deviceKey != null ? Id.of(deviceKey.publicKey().bytes()) : null;
 
-		this.transport = new DirectorTransport(vertx, directorUrl, CLIENT_API, nodeId, builder.resolveToAddress, builder.callbackExecutor, log);
+		this.resolveToAddress = builder.resolveToAddress;
+		this.callbackExecutor = builder.callbackExecutor;
+		this.transport = new DirectorTransport(vertx, directorUrl, CLIENT_API, nodeId, resolveToAddress, callbackExecutor, log);
 
 		// Tokens are signed with the user key when the client has it: that works before any device is
 		// registered. A device signs its own, naming itself as the client.
@@ -250,7 +260,12 @@ public class DirectorClient {
 	 * @return a future completing when the client is closed
 	 */
 	public CompletableFuture<Void> close() {
-		return transport.deliver(transport.close());
+		DirectorTransport auth;
+		synchronized (this) {
+			auth = authTransport;
+		}
+		return transport.deliver(auth == null ? transport.close() :
+				Future.join(transport.close(), auth.close()).<Void>mapEmpty());
 	}
 
 	/**
@@ -552,7 +567,7 @@ public class DirectorClient {
 	/**
 	 * Reads a pending request from a new device to join the user's account, so that the user can see what
 	 * they are about to approve. The new device made the request with
-	 * {@link DirectorGuest#requestDeviceRegistration(Signature.KeyPair, String, String)} and shows its
+	 * {@link DirectorGuest#requestDeviceRegistration(Signature.KeyPair, String, String, boolean)} and shows its
 	 * pairing code, typically as a QR code.
 	 *
 	 * @param code the pairing code the new device shows
@@ -560,12 +575,22 @@ public class DirectorClient {
 	 *         request (it was answered, or it expired)
 	 */
 	public CompletableFuture<Optional<PendingDevice>> getDeviceRegistration(PairingCode code) {
-		checkOpen();
 		Objects.requireNonNull(code, "code");
-		return transport.deliver(call(HttpMethod.GET, registrationPath(code.getRegistrationId()), null, true)
-				.compose(res -> res.json(PendingDevice.class))
-				.map(Optional::of)
-				.recover(DirectorClient::emptyIfNotFound));
+		return getDeviceRegistration(code.getRegistrationId());
+	}
+
+	/**
+	 * Reads a pending request from a new device by its registration id, as
+	 * {@link #getDeviceRegistration(PairingCode)} does.
+	 *
+	 * @param registrationId the id of the registration request
+	 * @return a future completing with the device asking to join, or empty if there is no such pending
+	 *         request
+	 */
+	public CompletableFuture<Optional<PendingDevice>> getDeviceRegistration(String registrationId) {
+		checkOpen();
+		Objects.requireNonNull(registrationId, "registrationId");
+		return fetchOptional(registrationPath(registrationId), PendingDevice.class);
 	}
 
 	/**
@@ -574,7 +599,6 @@ public class DirectorClient {
 	 *
 	 * @param code the pairing code the new device shows
 	 * @return a future completing when the request is approved
-	 * @throws IllegalStateException if the client has no user key to hand over
 	 */
 	public CompletableFuture<Void> approveDeviceRegistration(PairingCode code) {
 		return approveDeviceRegistration(code, null);
@@ -582,28 +606,90 @@ public class DirectorClient {
 
 	/**
 	 * Approves a pending request from a new device to join the user's account: the Director registers the
-	 * device to the user, and hands it this client's user key, sealed to the pairing code so that only the
-	 * new device can open it. The new device receives it from
-	 * {@link DirectorGuest#finishDeviceRegistration(DeviceRegistration)}.
+	 * device to the user. If the device asked for the user key, this client's user key goes with the
+	 * approval, sealed to the pairing code so that only the new device can open it (the Director relays it
+	 * without being able to read it); the new device receives it from
+	 * {@link DirectorGuest#finishDeviceRegistration(DeviceRegistration)}. A device that did not ask never
+	 * gets it.
 	 *
 	 * @param code the pairing code the new device shows
 	 * @param passphrase the account passphrase, or {@code null} if the account has none
 	 * @return a future completing when the request is approved; it fails with {@link NotFoundException} if
-	 *         there is no such pending request
-	 * @throws IllegalStateException if the client has no user key to hand over
+	 *         there is no such pending request, or {@link IllegalStateException} if the device asks for the
+	 *         user key and this client has none
 	 */
 	public CompletableFuture<Void> approveDeviceRegistration(PairingCode code, @Nullable String passphrase) {
-		checkOpen();
-		Objects.requireNonNull(code, "code");
-		Signature.KeyPair uk = userKey;
-		if (uk == null)
-			throw new IllegalStateException("Approving a device hands over the user key, which this client does not have");
+		return approveDeviceRegistration(code, passphrase, false);
+	}
 
-		Map<String, @Nullable Object> body = new LinkedHashMap<>();
-		body.put("approved", true);
-		body.put("userPrivateKey", CryptoBox.encryptSealed(uk.privateKey().bytes(), code.publicKey()));
-		putIfNotNull(body, "passphrase", passphrase);
-		return execute(HttpMethod.PATCH, registrationPath(code.getRegistrationId()), body);
+	/**
+	 * Approves a pending request, as {@link #approveDeviceRegistration(PairingCode, String)} does, and with
+	 * {@code admin} makes the new device an administrator's device: the user key signs the device id with
+	 * the nonce the device signed, as in a direct add, so admin power stays tied to the user key. Only an
+	 * administrator can do this.
+	 *
+	 * @param code the pairing code the new device shows
+	 * @param passphrase the account passphrase, or {@code null} if the account has none
+	 * @param admin whether the device acts as an administrator's device
+	 * @return a future completing when the request is approved
+	 * @throws IllegalStateException if {@code admin} and the client has no user key
+	 */
+	public CompletableFuture<Void> approveDeviceRegistration(PairingCode code, @Nullable String passphrase,
+			boolean admin) {
+		Objects.requireNonNull(code, "code");
+		return approve(code.getRegistrationId(), code, passphrase, admin);
+	}
+
+	/**
+	 * Approves a pending request by its registration id. That is enough only for a device that did not ask
+	 * for the user key: one that did must be approved with the pairing code it shows, since the key is
+	 * sealed to the code, never to a key the Director supplies.
+	 *
+	 * @param registrationId the id of the registration request
+	 * @param passphrase the account passphrase, or {@code null} if the account has none
+	 * @param admin whether the device acts as an administrator's device
+	 * @return a future completing when the request is approved; it fails with {@link IllegalStateException}
+	 *         if the device asks for the user key
+	 * @throws IllegalStateException if {@code admin} and the client has no user key
+	 */
+	public CompletableFuture<Void> approveDeviceRegistration(String registrationId, @Nullable String passphrase,
+			boolean admin) {
+		Objects.requireNonNull(registrationId, "registrationId");
+		return approve(registrationId, null, passphrase, admin);
+	}
+
+	private CompletableFuture<Void> approve(String registrationId, @Nullable PairingCode code,
+			@Nullable String passphrase, boolean admin) {
+		checkOpen();
+		Signature.KeyPair uk = userKey;
+		if (admin && uk == null)
+			throw new IllegalStateException("Making a device an administrator's takes the user key, which this client does not have");
+
+		// The request says whether the device wants the user key, and gives the nonce an administrator's
+		// approval signs: read it first.
+		Future<Void> approval = call(HttpMethod.GET, registrationPath(registrationId), null, true)
+				.compose(res -> res.json(PendingDevice.class))
+				.compose(device -> {
+					Map<String, @Nullable Object> body = new LinkedHashMap<>();
+					body.put("approved", true);
+					if (device.wantsUserKey()) {
+						if (code == null)
+							return Future.failedFuture(new IllegalStateException("This device asks for the user key: approve it with the pairing code it shows"));
+						if (uk == null)
+							return Future.failedFuture(new IllegalStateException("This device asks for the user key, which this client does not have"));
+						body.put("userPrivateKey", CryptoBox.encryptSealed(uk.privateKey().bytes(), code.publicKey()));
+					}
+					if (admin) {
+						byte[] nonce = device.nonce();
+						if (nonce == null)
+							return Future.failedFuture(new IllegalStateException("The Director did not say which nonce the device signed"));
+						body.put("admin", true);
+						body.put("userSig", Objects.requireNonNull(uk).privateKey().sign(deviceAuthorization(device.getDeviceId(), nonce)));
+					}
+					putIfNotNull(body, "passphrase", passphrase);
+					return call(HttpMethod.PATCH, registrationPath(registrationId), body, true).<Void>mapEmpty();
+				});
+		return transport.deliver(approval);
 	}
 
 	/**
@@ -615,12 +701,160 @@ public class DirectorClient {
 	 *         there is no such pending request
 	 */
 	public CompletableFuture<Void> denyDeviceRegistration(PairingCode code) {
-		checkOpen();
 		Objects.requireNonNull(code, "code");
+		return denyDeviceRegistration(code.getRegistrationId());
+	}
+
+	/**
+	 * Denies a pending request by its registration id. Denying needs no passphrase.
+	 *
+	 * @param registrationId the id of the registration request
+	 * @return a future completing when the request is denied
+	 */
+	public CompletableFuture<Void> denyDeviceRegistration(String registrationId) {
+		checkOpen();
+		Objects.requireNonNull(registrationId, "registrationId");
 
 		Map<String, @Nullable Object> body = new LinkedHashMap<>();
 		body.put("approved", false);
-		return execute(HttpMethod.PATCH, registrationPath(code.getRegistrationId()), body);
+		return execute(HttpMethod.PATCH, registrationPath(registrationId), body);
+	}
+
+	/**
+	 * Renames one of the user's devices. The name is all that changes, so no passphrase is needed.
+	 *
+	 * @param deviceId the id of the device
+	 * @param name the new name, 1 to 128 characters
+	 * @return a future completing with the renamed device; it fails with {@link NotFoundException} if the
+	 *         user has no such device
+	 */
+	public CompletableFuture<Device> renameDevice(Id deviceId, String name) {
+		checkOpen();
+		Objects.requireNonNull(deviceId, "deviceId");
+		Objects.requireNonNull(name, "name");
+
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		body.put("name", name);
+		return transport.deliver(call(HttpMethod.PUT, "/devices/" + deviceId.toBase58String(), body, true)
+				.compose(res -> res.json(Device.class)));
+	}
+
+	/**
+	 * Lists the account's security log, newest first: the last 50 things that happened to its passphrase,
+	 * devices and sign-ins.
+	 *
+	 * @return a future completing with the events
+	 */
+	public CompletableFuture<List<SecurityEvent>> listSecurityEvents() {
+		checkOpen();
+		return transport.deliver(call(HttpMethod.GET, "/security/events", null, true)
+				.compose(res -> res.decode(content -> new JsonArray(content).stream()
+						.map(o -> {
+							JsonObject e = (JsonObject) o;
+							return new SecurityEvent(e.getString("kind"), e.getString("method"),
+									e.getLong("at", 0L), e.getString("address"));
+						}).toList())));
+	}
+
+	// ---- Sign in with Boson Identity -----------------------------------------------------------
+
+	/**
+	 * Reads a web page's pending request to be signed in ("Sign in with Boson Identity"), from the code the
+	 * page shows (see {@link SignInRequest#parseCode(String)}).
+	 *
+	 * @param requestId the request id
+	 * @return a future completing with the request, or empty if there is no such pending request
+	 */
+	public CompletableFuture<Optional<SignInRequest>> getSignInRequest(String requestId) {
+		checkOpen();
+		Objects.requireNonNull(requestId, "requestId");
+		return fetchOptional(signInPath(requestId), SignInRequest.class);
+	}
+
+	/**
+	 * Approves a web page's sign-in, with the number the user picked: the one the page shows. A wrong
+	 * number refuses the request. Signing in to the admin dashboard takes the user key and an
+	 * administrator's account. The page gets a web session, which can't approve device registrations.
+	 *
+	 * @param requestId the request id
+	 * @param number the number the user picked
+	 * @return a future completing when the page is signed in; it fails with
+	 *         {@link io.bosonnetwork.director.client.exceptions.ConflictException} for a wrong number
+	 */
+	public CompletableFuture<Void> approveSignInRequest(String requestId, int number) {
+		checkOpen();
+		Objects.requireNonNull(requestId, "requestId");
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		body.put("approved", true);
+		body.put("number", number);
+		return execute(HttpMethod.PATCH, signInPath(requestId), body);
+	}
+
+	/**
+	 * Refuses a web page's sign-in.
+	 *
+	 * @param requestId the request id
+	 * @return a future completing when the request is refused
+	 */
+	public CompletableFuture<Void> denySignInRequest(String requestId) {
+		checkOpen();
+		Objects.requireNonNull(requestId, "requestId");
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		body.put("approved", false);
+		return execute(HttpMethod.PATCH, signInPath(requestId), body);
+	}
+
+	static String signInPath(String requestId) {
+		return "/auth/requests/" + DirectorTransport.encode(requestId);
+	}
+
+	// ---- Linked sign-ins ------------------------------------------------------------------------
+
+	/**
+	 * Lists the OAuth sign-ins linked to the user: the accounts (GitHub, Google, ...) that can sign in to
+	 * the portal as the user, and that can reset a forgotten passphrase.
+	 *
+	 * @return a future completing with the linked sign-ins
+	 */
+	public CompletableFuture<List<LinkedIdentity>> listLinkedIdentities() {
+		checkOpen();
+		DirectorTransport auth = authTransport();
+		return auth.deliver(auth.call(HttpMethod.GET, "/identities", null, tokens)
+				.compose(res -> res.json(LinkedIdentities.class))
+				.map(linked -> linked.identities));
+	}
+
+	/**
+	 * Unlinks one of the user's OAuth sign-ins. It takes the passphrase, if the user has one: a sign-in can
+	 * reset the passphrase, so the passphrase guards the list of them.
+	 *
+	 * @param sessionId the id of the sign-in, as {@link #listLinkedIdentities()} lists it
+	 * @param passphrase the account passphrase, or {@code null} if the account has none
+	 * @return a future completing when the sign-in is unlinked
+	 */
+	public CompletableFuture<Void> disconnectLinkedIdentity(Id sessionId, @Nullable String passphrase) {
+		checkOpen();
+		Objects.requireNonNull(sessionId, "sessionId");
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		putIfNotNull(body, "passphrase", passphrase);
+		DirectorTransport auth = authTransport();
+		return auth.deliver(auth.call(HttpMethod.POST, "/identities/" + sessionId.toBase58String() + "/disconnect",
+				body, tokens).<Void>mapEmpty());
+	}
+
+	private synchronized DirectorTransport authTransport() {
+		if (authTransport == null)
+			authTransport = new DirectorTransport(vertx, directorUrl, AUTH_API, nodeId, resolveToAddress, callbackExecutor, log);
+		return authTransport;
+	}
+
+	private static final class LinkedIdentities {
+		private final List<LinkedIdentity> identities;
+
+		@JsonCreator
+		LinkedIdentities(@JsonProperty(value = "identities", required = true) List<LinkedIdentity> identities) {
+			this.identities = List.copyOf(identities);
+		}
 	}
 
 	// What the user key signs to register a device directly: the device id, then the nonce the device
