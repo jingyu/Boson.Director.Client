@@ -27,7 +27,6 @@ import static io.bosonnetwork.director.client.DirectorTransport.putIfNotNull;
 import static io.bosonnetwork.director.client.DirectorTransport.requiredString;
 
 import java.net.InetSocketAddress;
-import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
@@ -38,6 +37,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.stream.Collectors;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -753,7 +753,7 @@ public class DirectorClient {
 							JsonObject e = (JsonObject) o;
 							return new SecurityEvent(e.getString("kind"), e.getString("method"),
 									e.getLong("at", 0L), e.getString("address"));
-						}).toList())));
+						}).collect(Collectors.toUnmodifiableList()))));
 	}
 
 	// ---- Sign in with Boson Identity -----------------------------------------------------------
@@ -957,7 +957,7 @@ public class DirectorClient {
 					JsonArray codes = new JsonObject(content).getJsonArray("recoveryCodes");
 					if (codes == null || codes.isEmpty())
 						throw new IllegalArgumentException("missing 'recoveryCodes'");
-					return codes.stream().map(String.class::cast).toList();
+					return codes.stream().map(String.class::cast).collect(Collectors.toUnmodifiableList());
 				})));
 	}
 
