@@ -62,6 +62,9 @@ import io.bosonnetwork.director.client.exceptions.RegistrationExpiredException;
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 public class PairingTests {
+	// The id the mock Director gives the registration: Base58, as a real one is.
+	private static final String REGISTRATION_ID = "Gj7rTyQ4HXa9v2Lm";
+
 	private final Id nodeId = Id.random();
 	private final Signature.KeyPair userKey = Signature.KeyPair.random();
 	private final Id userId = Id.of(userKey.publicKey().bytes());
@@ -87,8 +90,8 @@ public class PairingTests {
 			} else if (req.method() == HttpMethod.POST && path.endsWith("/client/devices/registrations")) {
 				request.set(body.toJsonObject());
 				req.response().setStatusCode(201).putHeader("Content-Type", "application/json")
-						.end("{\"registrationId\":\"reg-1\"}");
-			} else if (req.method() == HttpMethod.GET && path.endsWith("/reg-1")) {
+						.end("{\"registrationId\":\"" + REGISTRATION_ID + "\"}");
+			} else if (req.method() == HttpMethod.GET && path.endsWith("/" + REGISTRATION_ID)) {
 				JsonObject made = request.get();
 				req.response().putHeader("Content-Type", "application/json").end(new JsonObject()
 						.put("deviceId", made.getString("deviceId"))
@@ -104,7 +107,7 @@ public class PairingTests {
 				approvalBody.set(body.toJsonObject());
 				relayedKey.set(body.toJsonObject().getString("userPrivateKey"));
 				req.response().setStatusCode(204).end();
-			} else if (req.method() == HttpMethod.POST && path.endsWith("/reg-1")) {
+			} else if (req.method() == HttpMethod.POST && path.endsWith("/" + REGISTRATION_ID)) {
 				if (finishStatus != 201) {
 					req.response().setStatusCode(finishStatus).end("Refused - by the stub");
 					return;
@@ -143,20 +146,37 @@ public class PairingTests {
 
 	@Test
 	void theCodeRoundTrips() {
-		PairingCode code = new DeviceRegistration("reg-1", Signature.KeyPair.random(), CryptoBox.KeyPair.random())
+		String registrationId = Id.random().toBase58String();
+		PairingCode code = new DeviceRegistration(registrationId, Signature.KeyPair.random(), CryptoBox.KeyPair.random())
 				.getPairingCode();
-		assertTrue(code.toString().startsWith("bosonpair:1:reg-1:"));
+		assertTrue(code.toString().startsWith("boson:pair:1:" + registrationId + ":"), code.toString());
+		// The key: 32 bytes in base64url without padding.
+		assertEquals(43, code.toString().substring(("boson:pair:1:" + registrationId + ":").length()).length());
 		assertEquals(code, PairingCode.parse(code.toString()));
 		assertEquals(code, PairingCode.parse("  " + code + "\n"));
-		assertEquals("reg-1", code.getRegistrationId());
+		assertEquals(registrationId, code.getRegistrationId());
+	}
+
+	@Test
+	void theFormBeforeIsStillRead() {
+		// Apps from Boson 3.1 show bosonpair:1:<id>:<key>.
+		String registrationId = Id.random().toBase58String();
+		String key = Base64.getUrlEncoder().withoutPadding().encodeToString(CryptoBox.KeyPair.random().publicKey().bytes());
+		PairingCode legacy = PairingCode.parse("bosonpair:1:" + registrationId + ":" + key);
+		assertEquals(PairingCode.parse("boson:pair:1:" + registrationId + ":" + key), legacy);
+		assertEquals("boson:pair:1:" + registrationId + ":" + key, legacy.toString());
 	}
 
 	@Test
 	void whatIsNotACodeIsRejected() {
+		String id = Id.random().toBase58String();
 		String key = Base64.getUrlEncoder().withoutPadding().encodeToString(CryptoBox.KeyPair.random().publicKey().bytes());
-		for (String text : new String[] { "", "bosonpair", "bosonpair:1:reg-1", "bosonpair:2:reg-1:" + key,
-				"otherpair:1:reg-1:" + key, "bosonpair:1::" + key, "bosonpair:1:reg-1:not!base64",
-				"bosonpair:1:reg-1:AAAA" })
+		for (String text : new String[] { "", "bosonpair", "boson:pair:1:" + id, "boson:pair:2:" + id + ":" + key,
+				"boson:pair:1::" + key, "boson:pair:1:" + id + ":not!base64", "boson:pair:1:" + id + ":AAAA",
+				// Padded, or not a Base58 registration id.
+				"boson:pair:1:" + id + ":" + key + "=", "boson:pair:1:reg-1:" + key, "boson:pair:1:" + id + ":" + key + ":x",
+				"bosonpair:1:" + id, "bosonpair:2:" + id + ":" + key, "otherpair:1:" + id + ":" + key,
+				"bosonpair:1::" + key, "pmpair:1:" + id + ":" + key })
 			assertThrows(IllegalArgumentException.class, () -> PairingCode.parse(text), text);
 	}
 
@@ -167,7 +187,7 @@ public class PairingTests {
 		try {
 			DeviceRegistration registration = await(Future.fromCompletionStage(
 					newDevice.requestDeviceRegistration(Signature.KeyPair.random(), "Phone", "Tests", true)));
-			assertEquals("reg-1", registration.getRegistrationId());
+			assertEquals(REGISTRATION_ID, registration.getRegistrationId());
 			assertTrue(request.get().getBoolean("wantsUserKey"));
 
 			// The approving device reads the code the new device shows, as text.

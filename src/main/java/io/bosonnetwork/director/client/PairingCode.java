@@ -25,34 +25,47 @@ package io.bosonnetwork.director.client;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.regex.Pattern;
 
 import io.bosonnetwork.crypto.CryptoBox;
+import io.bosonnetwork.utils.BosonString;
 
 /**
  * What a new device shows to a device already registered to the user, typically as a QR code, so that
  * the user can approve it joining their account: the id of the registration request, and a public key
  * the approving device seals the user key to. Immutable.
  * <p>
- * Its text form, {@code bosonpair:1:<registration id>:<key>}, is the same for every app, so any Boson app
- * can approve a device of any other. {@link #parse(String)} also reads the first version of the format,
- * prefixed {@code pmpair}, which apps used before the format moved into this library.
+ * Its text form is the Boson string {@code boson:pair:1:<registration id>:<key>}: the registration id in
+ * Base58, the 32-byte X25519 key in base64url without padding (43 characters). It is the same for every
+ * app, so any Boson app can approve a device of any other. {@link #parse(String)} also reads the form
+ * before it, {@code bosonpair:1:<registration id>:<key>}, which apps from Boson 3.1 show.
  *
+ * @see io.bosonnetwork.utils.BosonString
  * @see DirectorGuest#requestDeviceRegistration(io.bosonnetwork.crypto.Signature.KeyPair, String, String)
  * @see DirectorClient#approveDeviceRegistration(PairingCode)
  */
 public final class PairingCode {
-	private static final String SCHEME = "bosonpair";
-	private static final String VERSION = "1";
+	/** The Boson string namespace of a pairing code. */
+	public static final String NAMESPACE = "pair";
+	/** The version of the pairing code this library writes. */
+	public static final int VERSION = 1;
+
+	// The form before the Boson string one, shown by apps from Boson 3.1; read, never written.
+	private static final String LEGACY_PREFIX = "bosonpair:1:";
 
 	private static final Base64.Encoder B64URL = Base64.getUrlEncoder().withoutPadding();
 	private static final Base64.Decoder B64URL_DECODER = Base64.getUrlDecoder();
+	private static final Pattern BASE58 = Pattern.compile("[1-9A-HJ-NP-Za-km-z]+");
+	// 32 bytes in base64url without padding.
+	private static final Pattern KEY = Pattern.compile("[A-Za-z0-9_-]{43}");
 
 	private final String registrationId;
 	private final byte[] publicKey;
 
 	PairingCode(String registrationId, byte[] publicKey) {
 		this.registrationId = Objects.requireNonNull(registrationId, "registrationId");
-		if (registrationId.isEmpty() || registrationId.indexOf(':') >= 0)
+		if (!BASE58.matcher(registrationId).matches())
 			throw new IllegalArgumentException("Invalid registration id: " + registrationId);
 		if (publicKey.length != CryptoBox.PublicKey.BYTES)
 			throw new IllegalArgumentException("Invalid public key length: " + publicKey.length);
@@ -60,7 +73,8 @@ public final class PairingCode {
 	}
 
 	/**
-	 * Parses a pairing code from its text form, as scanned or pasted.
+	 * Parses a pairing code from its text form, as scanned or pasted: the Boson string, or the form
+	 * before it.
 	 *
 	 * @param text the text form
 	 * @return the pairing code
@@ -68,17 +82,26 @@ public final class PairingCode {
 	 */
 	public static PairingCode parse(String text) {
 		Objects.requireNonNull(text, "text");
-		String[] parts = text.trim().split(":", 4);
-		if (parts.length != 4 || !parts[0].equals(SCHEME) || !parts[1].equals(VERSION))
+		String trimmed = text.trim();
+		String registrationId;
+		String key;
+		Optional<BosonString> code = BosonString.parse(trimmed, NAMESPACE, VERSION, 2);
+		if (code.isPresent()) {
+			registrationId = code.get().field(0);
+			key = code.get().field(1);
+		} else if (trimmed.startsWith(LEGACY_PREFIX)) {
+			String[] parts = trimmed.substring(LEGACY_PREFIX.length()).split(":", 2);
+			if (parts.length != 2)
+				throw new IllegalArgumentException("Not a pairing code");
+			registrationId = parts[0];
+			key = parts[1];
+		} else {
 			throw new IllegalArgumentException("Not a pairing code");
-
-		byte[] key;
-		try {
-			key = B64URL_DECODER.decode(parts[3]);
-		} catch (IllegalArgumentException e) {
-			throw new IllegalArgumentException("Not a pairing code: malformed key", e);
 		}
-		return new PairingCode(parts[2], key);
+
+		if (!KEY.matcher(key).matches())
+			throw new IllegalArgumentException("Not a pairing code: malformed key");
+		return new PairingCode(registrationId, B64URL_DECODER.decode(key));
 	}
 
 	/**
@@ -96,13 +119,13 @@ public final class PairingCode {
 	}
 
 	/**
-	 * Returns the text form of the code, to show or share: {@code bosonpair:1:<registration id>:<key>}.
+	 * Returns the text form of the code, to show or share: {@code boson:pair:1:<registration id>:<key>}.
 	 *
 	 * @return the text form
 	 */
 	@Override
 	public String toString() {
-		return SCHEME + ":" + VERSION + ":" + registrationId + ":" + B64URL.encodeToString(publicKey);
+		return BosonString.format(NAMESPACE, VERSION, registrationId, B64URL.encodeToString(publicKey));
 	}
 
 	@Override

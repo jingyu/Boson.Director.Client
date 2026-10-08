@@ -25,10 +25,13 @@ package io.bosonnetwork.director.client;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import org.jspecify.annotations.Nullable;
+
+import io.bosonnetwork.utils.BosonString;
 
 /**
  * A web page asking to be signed in by the user's app ("Sign in with Boson Identity"), as the app sees it
@@ -42,7 +45,12 @@ public class SignInRequest {
 	/** The {@linkplain #getApp() app} of a request to sign in to the admin dashboard. */
 	public static final String APP_ADMIN = "admin";
 
-	private static final String CODE_PREFIX = "bosonsignin:1:";
+	/** The Boson string namespace of a sign-in code. */
+	public static final String CODE_NAMESPACE = "signin";
+	/** The version of the sign-in code. */
+	public static final int CODE_VERSION = 1;
+
+	private static final Pattern BASE58 = Pattern.compile("[1-9A-HJ-NP-Za-km-z]+");
 
 	private final String requestId;
 	private final String app;
@@ -67,13 +75,18 @@ public class SignInRequest {
 	}
 
 	/**
-	 * The QR code text a page shows for its request.
+	 * The QR code text a page shows for its request: the Boson string {@code boson:signin:1:<requestId>},
+	 * the request id in Base58.
 	 *
 	 * @param requestId the request id
 	 * @return the code
+	 * @throws IllegalArgumentException if the request id is not Base58
 	 */
 	public static String code(String requestId) {
-		return CODE_PREFIX + Objects.requireNonNull(requestId, "requestId");
+		Objects.requireNonNull(requestId, "requestId");
+		if (!BASE58.matcher(requestId).matches())
+			throw new IllegalArgumentException("Invalid request id: " + requestId);
+		return BosonString.format(CODE_NAMESPACE, CODE_VERSION, requestId);
 	}
 
 	/**
@@ -83,11 +96,9 @@ public class SignInRequest {
 	 * @return the request id, or empty if the text is not a sign-in code
 	 */
 	public static Optional<String> parseCode(String text) {
-		String trimmed = Objects.requireNonNull(text, "text").trim();
-		if (!trimmed.startsWith(CODE_PREFIX))
-			return Optional.empty();
-		String id = trimmed.substring(CODE_PREFIX.length());
-		return id.isEmpty() || id.indexOf(':') >= 0 || id.indexOf('/') >= 0 ? Optional.empty() : Optional.of(id);
+		return BosonString.parse(Objects.requireNonNull(text, "text"), CODE_NAMESPACE, CODE_VERSION, 1)
+				.map(code -> code.field(0))
+				.filter(id -> BASE58.matcher(id).matches());
 	}
 
 	/**
