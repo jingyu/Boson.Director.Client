@@ -36,10 +36,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpMethod;
+import io.vertx.core.json.JsonObject;
 import org.jspecify.annotations.NullUnmarked;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -130,6 +132,10 @@ import io.bosonnetwork.web.client.SelfIssuedAccessTokens;
 public class DirectorAdmin {
 	// Every admin API lives under this path of the Director API.
 	private static final String ADMIN_API = "/admin";
+
+	// How long a long poll may go without a byte before it fails: the Director holds one for 50 seconds at
+	// most, then answers, and the client polls again.
+	private static final long LONG_POLL_IDLE_TIMEOUT = TimeUnit.SECONDS.toMillis(65);
 
 	private final URL directorUrl;
 	// The configured node id, or the one the Director reported once looked up.
@@ -429,6 +435,93 @@ public class DirectorAdmin {
 	public CompletableFuture<Void> removeDevice(Id deviceId) {
 		checkOpen();
 		return execute(HttpMethod.DELETE, devicePath(deviceId), null);
+	}
+
+	// ---- Enrolling administrators --------------------------------------------------------------
+
+	/**
+	 * Opens an enrollment request: an invitation for a Boson Identity app to make its user an administrator
+	 * of the node, shown on the console as an {@link EnrollmentCode} (a QR code). The code holds no
+	 * credential. The first app to claim the request holds it and shows a number; wait for the claim with
+	 * {@link #awaitEnrollmentClaim(Id)}, then approve with the number the phone shows. The request expires
+	 * after ten minutes.
+	 *
+	 * @return a future completing with the open request; its {@linkplain Enrollment#getUrl() URL} is the
+	 *         Director's address as apps reach it, when the Director knows it
+	 */
+	public CompletableFuture<Enrollment> createEnrollment() {
+		checkOpen();
+		return transport.deliver(call(HttpMethod.POST, "/enrollments", null)
+				.compose(res -> res.decode(content -> Enrollment.fromJson(new JsonObject(content)))));
+	}
+
+	/**
+	 * Looks up an enrollment request, answered at once.
+	 *
+	 * @param requestId the request id
+	 * @return a future completing with the request, or empty if there is no such request (it may have
+	 *         expired)
+	 */
+	public CompletableFuture<Optional<Enrollment>> getEnrollment(Id requestId) {
+		checkOpen();
+		return transport.deliver(call(HttpMethod.GET, enrollmentPath(requestId) + "?wait=0", null)
+				.compose(res -> res.decode(content -> Enrollment.fromJson(new JsonObject(content))))
+				.map(Optional::of)
+				.recover(e -> e instanceof NotFoundException ?
+						Future.succeededFuture(Optional.empty()) : Future.failedFuture(e)));
+	}
+
+	/**
+	 * Waits for an app to claim an enrollment request. The Director holds each call for a while, and the
+	 * client asks again until the request is claimed or ends, so this may take minutes.
+	 *
+	 * @param requestId the request id
+	 * @return a future completing with the request once it is no longer open: claimed, with who claimed
+	 *         it, or ended (denied, expired); it fails with {@link NotFoundException} if the Director has no
+	 *         such request
+	 */
+	public CompletableFuture<Enrollment> awaitEnrollmentClaim(Id requestId) {
+		checkOpen();
+		return transport.deliver(pollEnrollment(enrollmentPath(requestId)));
+	}
+
+	private Future<Enrollment> pollEnrollment(String path) {
+		return transport.call(HttpMethod.GET, path, null, tokens, LONG_POLL_IDLE_TIMEOUT)
+				.compose(res -> res.decode(content -> Enrollment.fromJson(new JsonObject(content))))
+				.compose(enrollment -> enrollment.getState() == Enrollment.State.OPEN && !transport.isClosed() ?
+						pollEnrollment(path) : Future.succeededFuture(enrollment));
+	}
+
+	/**
+	 * Approves a claimed enrollment request with the number the claiming phone shows. A wrong number uses up
+	 * one of three tries, and the last one denies the request. The right one makes the claimant an
+	 * administrator: a new account is created as one, with the phone's device; a member's account is made
+	 * one, and the phone's device registered if it is new.
+	 *
+	 * @param requestId the request id
+	 * @param number    the number the phone shows
+	 * @return a future completing with the answer: approved, or refused with the tries left; it fails with
+	 *         {@link io.bosonnetwork.director.client.exceptions.ConflictException} if the request is not
+	 *         claimed yet, or {@link NotFoundException} if there is no such request; a request that ended
+	 *         fails with a {@link DirectorException} of status 410
+	 */
+	public CompletableFuture<EnrollmentApproval> approveEnrollment(Id requestId, int number) {
+		checkOpen();
+		String path = enrollmentPath(requestId) + "/approve";
+		return transport.deliver(call(HttpMethod.POST, path, Map.of("number", number))
+				.compose(res -> res.decode(content -> EnrollmentApproval.fromJson(new JsonObject(content)))));
+	}
+
+	/**
+	 * Denies an enrollment request, open or claimed. The claiming app, if any, learns it was denied.
+	 *
+	 * @param requestId the request id
+	 * @return a future completing when the request is denied; it fails with {@link NotFoundException} if
+	 *         there is no such request, and with a {@link DirectorException} of status 410 if it already ended
+	 */
+	public CompletableFuture<Void> cancelEnrollment(Id requestId) {
+		checkOpen();
+		return execute(HttpMethod.DELETE, enrollmentPath(requestId), null);
 	}
 
 	// ---- Subscriptions -------------------------------------------------------------------------
@@ -1321,6 +1414,10 @@ public class DirectorAdmin {
 
 	private static String userPath(Id userId) {
 		return "/users/" + Objects.requireNonNull(userId, "userId").toBase58String();
+	}
+
+	private static String enrollmentPath(Id requestId) {
+		return "/enrollments/" + Objects.requireNonNull(requestId, "requestId").toBase58String();
 	}
 
 	private static String devicePath(Id deviceId) {

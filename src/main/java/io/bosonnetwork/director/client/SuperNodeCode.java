@@ -98,7 +98,7 @@ public final class SuperNodeCode {
 		return Optional.empty();
 	}
 
-	private static String checkUrl(String url) {
+	static String checkUrl(String url) {
 		Objects.requireNonNull(url, "url");
 		URI uri;
 		try {

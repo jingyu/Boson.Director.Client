@@ -86,4 +86,36 @@ public class CodeFormatsTests {
 
 		assertThrows(IllegalArgumentException.class, () -> SuperNodeCode.of(Id.random(), "https://node.example#x"));
 	}
+
+	@Test
+	void theEnrollmentCodeCarriesTheRequestTheNodeAndTheUrl() {
+		Id requestId = Id.random();
+		Id nodeId = Id.random();
+		EnrollmentCode code = EnrollmentCode.of(requestId, nodeId, "https://node.example:8443/director/");
+		assertEquals("boson:enroll:1:" + requestId + ":" + nodeId + ":https://node.example:8443/director",
+				code.toString());
+
+		EnrollmentCode read = EnrollmentCode.parse("  " + code + "\n").orElseThrow();
+		assertEquals(code, read);
+		assertEquals(requestId, read.getRequestId());
+		assertEquals(nodeId, read.getNodeId());
+		assertEquals("https://node.example:8443/director", read.getUrl());
+		assertEquals(SuperNodeCode.of(nodeId, "https://node.example:8443/director"), read.toSuperNodeCode());
+	}
+
+	@Test
+	void whatIsNotAnEnrollmentCodeIsRejected() {
+		String id = Id.random().toBase58String();
+		String node = Id.random().toBase58String();
+		for (String text : new String[] { "", "boson:enroll:1:" + id + ":" + node,
+				"boson:enroll:2:" + id + ":" + node + ":https://node.example",
+				"boson:enroll:1:" + id + "::https://node.example",
+				"boson:enroll:1:" + id + ":" + node + ":ftp://node.example",
+				"boson:enroll:1:" + id + ":" + node + ":https://node.example?x=1",
+				"boson:enroll:1:not-base58!:" + node + ":https://node.example",
+				"boson:supernode:1:" + node + ":https://node.example" })
+			assertFalse(EnrollmentCode.parse(text).isPresent(), text);
+
+		assertThrows(IllegalArgumentException.class, () -> EnrollmentCode.of(Id.random(), Id.random(), "https://u@node.example"));
+	}
 }

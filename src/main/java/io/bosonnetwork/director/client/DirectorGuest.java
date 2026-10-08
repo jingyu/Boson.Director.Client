@@ -86,6 +86,10 @@ public class DirectorGuest {
 	// only has to outlast that.
 	private static final long REGISTRATION_WAIT = TimeUnit.MINUTES.toMillis(4);
 
+	// How long a long poll may go without a byte before it fails: the Director holds one for 50 seconds at
+	// most, then answers, and the client polls again.
+	private static final long LONG_POLL_IDLE_TIMEOUT = TimeUnit.SECONDS.toMillis(65);
+
 	private final URL directorUrl;
 	private final DirectorTransport transport;
 
@@ -413,6 +417,100 @@ public class DirectorGuest {
 						"/client" + DirectorClient.signInPath(signIn.getRequestId()), body, null, REGISTRATION_WAIT)
 				.recover(e -> Future.failedFuture(registrationFailure(e)))
 				.compose(res -> res.stringField("token")));
+	}
+
+	// ---- Enrolling as an administrator ---------------------------------------------------------
+
+	/**
+	 * Claims an administrator's enrollment request, scanned from the node's console, for the user of
+	 * {@code userKey}. Build this client for the code's Director and node: its {@linkplain
+	 * EnrollmentCode#getUrl() URL} and {@linkplain EnrollmentCode#getNodeId() node id}. The user key and the
+	 * device key each sign the claim, bound to the node and the request; neither key is sent. The first
+	 * claim holds the request: show the returned {@linkplain PendingEnrollment#getNumber() number}, which the
+	 * owner types on the console, and wait for the answer with {@link #finishEnrollment(PendingEnrollment)}.
+	 * <p>
+	 * On approval the user is an administrator of the node, with the device registered to it (as an app,
+	 * {@code app}); a user without an account on the node gets one. The device itself is not made an
+	 * administrator's: admin work stays with the user key.
+	 *
+	 * @param code       the enrollment code
+	 * @param userKey    the user's key pair
+	 * @param deviceKey  this device's key pair
+	 * @param deviceName a name for the device, shown on the console and to the user
+	 * @param app        the name of the app the device runs
+	 * @return a future completing with the pending enrollment; it fails with
+	 *         {@link io.bosonnetwork.director.client.exceptions.ConflictException} if another app claimed the
+	 *         request first, or the device is registered to another user,
+	 *         {@link io.bosonnetwork.director.client.exceptions.ForbiddenException} if the user's account on
+	 *         the node is deactivated, {@link NotFoundException} if there is no such request, or a
+	 *         {@link DirectorException} of status 410 if it ended
+	 * @throws IllegalArgumentException if the user key and the device key are the same
+	 */
+	public CompletableFuture<PendingEnrollment> claimEnrollment(EnrollmentCode code, Signature.KeyPair userKey,
+			Signature.KeyPair deviceKey, String deviceName, String app) {
+		transport.checkOpen();
+		Objects.requireNonNull(code, "code");
+		Objects.requireNonNull(userKey, "userKey");
+		Objects.requireNonNull(deviceKey, "deviceKey");
+		Objects.requireNonNull(deviceName, "deviceName");
+		Objects.requireNonNull(app, "app");
+		Id userId = Id.of(userKey.publicKey().bytes());
+		Id deviceId = Id.of(deviceKey.publicKey().bytes());
+		if (userId.equals(deviceId))
+			throw new IllegalArgumentException("The device key must not be the user key");
+
+		byte[] nonce = Random.randomBytes(NONCE_SIZE);
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		body.put("userId", userId);
+		body.put("deviceId", deviceId);
+		body.put("deviceName", deviceName);
+		body.put("app", app);
+		body.put("nonce", nonce);
+		body.put("userSig", userKey.privateKey().sign(code.claimMessage(userId, nonce)));
+		body.put("deviceSig", deviceKey.privateKey().sign(code.claimMessage(deviceId, nonce)));
+		return transport.deliver(transport.call(HttpMethod.POST, enrollmentPath(code.getRequestId()), body, null)
+				.compose(res -> res.decode(content -> {
+					JsonObject json = new JsonObject(content);
+					Integer number = json.getInteger("number");
+					if (number == null)
+						throw new IllegalArgumentException("missing 'number'");
+					long expiresAt = System.currentTimeMillis() + json.getLong("expiresIn", 0L) * 1000;
+					return new PendingEnrollment(code, deviceId, number, expiresAt);
+				})));
+	}
+
+	/**
+	 * Waits for the console to answer a claimed enrollment request. The Director holds each call for a
+	 * while, and the client asks again until the request is answered, so this may take minutes.
+	 *
+	 * @param enrollment the pending enrollment
+	 * @return a future completing when the request is approved: the user is an administrator of the node;
+	 *         it fails with {@link RegistrationDeniedException} if the request was denied (on the console, or
+	 *         after wrong numbers), {@link RegistrationExpiredException} if it expired, or
+	 *         {@link NotFoundException} if the Director has no such request for this device
+	 */
+	public CompletableFuture<Void> finishEnrollment(PendingEnrollment enrollment) {
+		transport.checkOpen();
+		Objects.requireNonNull(enrollment, "enrollment");
+		String path = enrollmentPath(enrollment.getCode().getRequestId()) + "?deviceId=" +
+				enrollment.getDeviceId().toBase58String();
+		return transport.deliver(pollEnrollment(path));
+	}
+
+	private Future<Void> pollEnrollment(String path) {
+		return transport.call(HttpMethod.GET, path, null, null, LONG_POLL_IDLE_TIMEOUT)
+				.compose(res -> res.stringField("state"))
+				.compose(state -> switch (state) {
+					case "approved" -> Future.<Void>succeededFuture();
+					case "denied" -> Future.<Void>failedFuture(new RegistrationDeniedException("The enrollment was denied"));
+					case "expired" -> Future.<Void>failedFuture(new RegistrationExpiredException("The enrollment request expired"));
+					default -> transport.isClosed() ? Future.<Void>failedFuture(new IllegalStateException("Client is closed")) :
+							pollEnrollment(path);
+				});
+	}
+
+	private static String enrollmentPath(Id requestId) {
+		return "/client/enrollments/" + requestId.toBase58String();
 	}
 
 	// The statuses the Director finishes a registration with mean other things elsewhere: typed here only.
