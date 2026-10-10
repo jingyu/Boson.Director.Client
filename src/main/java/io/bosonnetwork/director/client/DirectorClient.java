@@ -61,6 +61,7 @@ import io.bosonnetwork.crypto.Signature;
 import io.bosonnetwork.crypto.pow.RegistrationPowClient;
 import io.bosonnetwork.director.client.exceptions.DirectorException;
 import io.bosonnetwork.director.client.exceptions.NotFoundException;
+import io.bosonnetwork.director.client.exceptions.ProfileChangedException;
 import io.bosonnetwork.director.client.exceptions.ProofOfWorkException;
 import io.bosonnetwork.director.client.exceptions.RegistrationDisabledException;
 import io.bosonnetwork.json.Json;
@@ -999,19 +1000,21 @@ public class DirectorClient {
 	 * @return a future completing when the profile is updated
 	 * @throws IllegalArgumentException if the update changes nothing
 	 */
-	public CompletableFuture<Void> updateProfile(ProfileUpdate update) {
+	public CompletableFuture<Long> updateProfile(ProfileUpdate update) {
 		return updateProfile(update, null);
 	}
 
 	/**
 	 * Updates the user's profile. Only the fields set on the update are changed.
 	 *
-	 * @param update the fields to change
+	 * @param update the fields to change, conditional on a revision if {@link ProfileUpdate#ifRevision(long)}
+	 *               says so
 	 * @param passphrase the account passphrase, or {@code null} if the account has none
-	 * @return a future completing when the profile is updated
+	 * @return a future completing with the profile's new revision; it fails with
+	 *         {@link ProfileChangedException} if the update was conditional and the profile changed since
 	 * @throws IllegalArgumentException if the update changes nothing
 	 */
-	public CompletableFuture<Void> updateProfile(ProfileUpdate update, @Nullable String passphrase) {
+	public CompletableFuture<Long> updateProfile(ProfileUpdate update, @Nullable String passphrase) {
 		checkOpen();
 		Objects.requireNonNull(update, "update");
 		if (update.isEmpty())
@@ -1019,7 +1022,37 @@ public class DirectorClient {
 
 		Map<String, @Nullable Object> body = new LinkedHashMap<>(update.fields());
 		putIfNotNull(body, "passphrase", passphrase);
-		return execute(HttpMethod.PUT, "/profile", body);
+		return transport.deliver(transport.call(HttpMethod.PUT, "/profile", body, tokens, ifRevision(update.ifRevision()))
+				.recover(DirectorClient::profileChanged)
+				.map(DirectorClient::revisionOf));
+	}
+
+	// The If-Match header naming the revision a change of the profile is made from; none for no revision.
+	private static MultiMap ifRevision(@Nullable Long revision) {
+		MultiMap headers = MultiMap.caseInsensitiveMultiMap();
+		if (revision != null)
+			headers.set("If-Match", "\"" + revision + "\"");
+		return headers;
+	}
+
+	// The Director refuses a change made from another revision with 412: typed here only, since 412 means
+	// other things elsewhere.
+	private static <T> Future<T> profileChanged(Throwable e) {
+		if (e instanceof DirectorException de && de.getStatus() == ProfileChangedException.STATUS)
+			return Future.failedFuture(new ProfileChangedException(de.getMessage()));
+		return Future.failedFuture(e);
+	}
+
+	// The new revision a change of the profile answers with; -1 from a Director that predates revisions.
+	private static long revisionOf(DirectorTransport.Response res) {
+		if (res.body().length() == 0)
+			return -1L;
+		try {
+			Long revision = new JsonObject(res.bodyAsString()).getLong("profileRevision");
+			return revision != null ? revision : -1L;
+		} catch (RuntimeException e) {
+			return -1L;
+		}
 	}
 
 	/**
@@ -1155,6 +1188,50 @@ public class DirectorClient {
 						AvatarRefresh.unchanged(held) : AvatarRefresh.changed(avatarOf(res)))
 				.recover(e -> e instanceof NotFoundException ? Future.succeededFuture(AvatarRefresh.removed()) :
 						Future.failedFuture(e));
+	}
+
+	/**
+	 * Uploads a new avatar for the user, as {@link #updateAvatar(byte[], String)} does, conditional on the
+	 * profile's revision when {@code ifRevision} is given.
+	 *
+	 * @param image the image data
+	 * @param contentType the image type, {@code image/png} or {@code image/jpeg}
+	 * @param ifRevision the profile revision the change is made from, or {@code null} for none
+	 * @return a future completing with the avatar's URI and the profile's new revision; it fails with
+	 *         {@link ProfileChangedException} if the profile changed since {@code ifRevision}
+	 * @throws IllegalArgumentException if the image is empty or the type is not PNG or JPEG
+	 */
+	public CompletableFuture<AvatarChange> changeAvatar(byte[] image, String contentType, @Nullable Long ifRevision) {
+		checkOpen();
+		Objects.requireNonNull(image, "image");
+		Objects.requireNonNull(contentType, "contentType");
+		if (image.length == 0)
+			throw new IllegalArgumentException("The avatar image is empty");
+		String type = avatarType(contentType);
+		return transport.deliver(transport.call(HttpMethod.PUT, "/avatar", Buffer.buffer(image), type, tokens,
+						ifRevision(ifRevision))
+				.recover(DirectorClient::profileChanged)
+				.compose(res -> res.decode(content -> {
+					JsonObject json = new JsonObject(content);
+					return new AvatarChange(DirectorTransport.requiredString(json, "uri"),
+							json.getLong("profileRevision", -1L));
+				})));
+	}
+
+	/**
+	 * Removes the user's avatar, conditional on the profile's revision when {@code ifRevision} is given.
+	 * Succeeds without effect if the user has none.
+	 *
+	 * @param ifRevision the profile revision the change is made from, or {@code null} for none
+	 * @return a future completing with the profile's revision after the removal; it fails with
+	 *         {@link ProfileChangedException} if the profile changed since {@code ifRevision}
+	 */
+	public CompletableFuture<Long> removeAvatar(@Nullable Long ifRevision) {
+		checkOpen();
+		return transport.deliver(transport.call(HttpMethod.DELETE, "/avatar", (Map<String, ?>) null, tokens,
+						ifRevision(ifRevision))
+				.recover(DirectorClient::profileChanged)
+				.map(DirectorClient::revisionOf));
 	}
 
 	/**

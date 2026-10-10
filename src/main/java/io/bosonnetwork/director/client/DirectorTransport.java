@@ -220,6 +220,26 @@ final class DirectorTransport {
 		return call(method, path, body, body != null ? CONTENT_TYPE_JSON : null, tokens, idleTimeout, null);
 	}
 
+	// As call(HttpMethod, String, Map, AccessTokenSource), with request headers, such as If-Match.
+	Future<Response> call(HttpMethod method, String path, @Nullable Map<String, ?> json,
+			@Nullable AccessTokenSource tokens, MultiMap headers) {
+		Buffer body = null;
+		if (json != null) {
+			try {
+				body = Buffer.buffer(Json.objectMapper().writeValueAsBytes(json));
+			} catch (JsonProcessingException e) {
+				return Future.failedFuture(new DirectorException("Cannot encode the request: " + e.getMessage(), e));
+			}
+		}
+		return call(method, path, body, body != null ? CONTENT_TYPE_JSON : null, tokens, 0, headers, false);
+	}
+
+	// As call(HttpMethod, String, Buffer, String, AccessTokenSource), with request headers.
+	Future<Response> call(HttpMethod method, String path, @Nullable Buffer body, @Nullable String contentType,
+			@Nullable AccessTokenSource tokens, MultiMap headers) {
+		return call(method, path, body, contentType, tokens, 0, headers, false);
+	}
+
 	// Sends a request to the API and fails the result on any non-2xx answer. A request with no token
 	// source is sent without credentials. Every API call of both clients goes through here, so adding
 	// one is a method that names its path and decodes its answer.
@@ -237,12 +257,20 @@ final class DirectorTransport {
 	private Future<Response> call(HttpMethod method, String path, @Nullable Buffer body,
 			@Nullable String contentType, @Nullable AccessTokenSource tokens, long idleTimeout,
 			@Nullable MultiMap conditions) {
+		return call(method, path, body, contentType, tokens, idleTimeout, conditions,
+				conditions != null && !conditions.isEmpty());
+	}
+
+	// The request itself: [headers] are sent as they are; a [conditional] GET takes 304 as success.
+	private Future<Response> call(HttpMethod method, String path, @Nullable Buffer body,
+			@Nullable String contentType, @Nullable AccessTokenSource tokens, long idleTimeout,
+			@Nullable MultiMap headers, boolean conditional) {
 		Future<Response> response;
 		if (tokens == null) {
-			response = send(method, path, body, contentType, null, idleTimeout, conditions);
+			response = send(method, path, body, contentType, null, idleTimeout, headers);
 		} else {
 			AccessTokenSource source = tokens;
-			response = source.token().compose(t -> send(method, path, body, contentType, t, idleTimeout, conditions)
+			response = source.token().compose(t -> send(method, path, body, contentType, t, idleTimeout, headers)
 					.compose(res -> {
 						// The date of the refusal is how a client that issues its own tokens learns that
 						// its clock, not its key, is what the Director objected to.
@@ -251,11 +279,10 @@ final class DirectorTransport {
 
 						// Rejected before it was acted on, and the token source can do better: repeat once.
 						return source.token().compose(fresh ->
-								send(method, path, body, contentType, fresh, idleTimeout, conditions));
+								send(method, path, body, contentType, fresh, idleTimeout, headers));
 					}));
 		}
 
-		boolean conditional = conditions != null && !conditions.isEmpty();
 		return response.compose(res -> checkStatus(method, path, res, conditional))
 				.recover(this::wrapError);
 	}

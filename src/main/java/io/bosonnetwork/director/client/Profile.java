@@ -50,6 +50,9 @@ public class Profile {
 	private final long updatedAt;
 	private final String planName;
 	private final boolean passphraseProtected;
+	// Set by Jackson after the constructor: 0 from a Director that predates profile revisions.
+	@JsonProperty("profileRevision")
+	private long profileRevision;
 
 	@JsonCreator
 	Profile(@JsonProperty(value = "id", required = true) Id id,
@@ -139,12 +142,25 @@ public class Profile {
 	}
 
 	/**
-	 * Returns when the profile was last changed.
+	 * Returns when the account was last changed: its profile, but also its passphrase or administrator
+	 * flag. To sync a profile, use {@link #getProfileRevision()}.
 	 *
 	 * @return the update time, in epoch milliseconds
 	 */
 	public long getUpdatedAt() {
 		return updatedAt;
+	}
+
+	/**
+	 * Returns the profile's revision: raised by a change of the name, bio, email or avatar, and only by
+	 * those. An app that keeps the profile locally syncs against it, and changes the profile with the
+	 * revision it last synced ({@link ProfileUpdate#ifRevision(long)}), so that a change made meanwhile
+	 * elsewhere is not overwritten.
+	 *
+	 * @return the revision, 0 for a profile never changed
+	 */
+	public long getProfileRevision() {
+		return profileRevision;
 	}
 
 	/**

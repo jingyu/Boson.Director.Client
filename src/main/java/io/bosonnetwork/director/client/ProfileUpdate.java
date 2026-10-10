@@ -39,6 +39,7 @@ import org.jspecify.annotations.Nullable;
  */
 public class ProfileUpdate {
 	private final Map<String, @Nullable Object> fields = new LinkedHashMap<>();
+	private @Nullable Long ifRevision;
 
 	/**
 	 * Creates an update that changes nothing yet.
@@ -77,6 +78,24 @@ public class ProfileUpdate {
 	public ProfileUpdate bio(@Nullable String bio) {
 		fields.put("bio", bio);
 		return this;
+	}
+
+	/**
+	 * Makes the update conditional: the Director applies it only if the profile is still at
+	 * {@code revision}, and refuses it otherwise with a
+	 * {@link io.bosonnetwork.director.client.exceptions.ProfileChangedException}.
+	 *
+	 * @param revision the profile revision the update was made from, as last read
+	 * @return this update
+	 */
+	public ProfileUpdate ifRevision(long revision) {
+		this.ifRevision = revision;
+		return this;
+	}
+
+	// The revision the update is conditional on, if any.
+	@Nullable Long ifRevision() {
+		return ifRevision;
 	}
 
 	/**
