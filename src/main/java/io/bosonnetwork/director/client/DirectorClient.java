@@ -748,7 +748,26 @@ public class DirectorClient {
 	 */
 	public CompletableFuture<List<SecurityEvent>> listSecurityEvents() {
 		checkOpen();
-		return transport.deliver(call(HttpMethod.GET, "/security/events", null, true)
+		return listEvents("/security/events");
+	}
+
+	/**
+	 * Lists the newest {@code limit} events of the account's security log, newest first. The node keeps
+	 * at least the newest 200, and every event of the last 90 days.
+	 *
+	 * @param limit how many events, from 1 to 200
+	 * @return a future completing with the events
+	 * @throws IllegalArgumentException if the limit is out of range
+	 */
+	public CompletableFuture<List<SecurityEvent>> listSecurityEvents(int limit) {
+		checkOpen();
+		if (limit < 1 || limit > 200)
+			throw new IllegalArgumentException("limit is from 1 to 200");
+		return listEvents("/security/events?limit=" + limit);
+	}
+
+	private CompletableFuture<List<SecurityEvent>> listEvents(String path) {
+		return transport.deliver(call(HttpMethod.GET, path, null, true)
 				.compose(res -> res.decode(content -> new JsonArray(content).stream()
 						.map(o -> {
 							JsonObject e = (JsonObject) o;
