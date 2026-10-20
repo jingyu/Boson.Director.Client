@@ -194,6 +194,8 @@ public class NodeStatus {
 		public static final String ACTIVE_PROXY = "io.bosonnetwork.activeproxy";
 		/** The service id of Photon messaging: an {@code mqtt(s)} endpoint. */
 		public static final String PHOTON_MESSAGING = "io.bosonnetwork.photonmessaging";
+		/** The service id of the TURN relay: an {@code http(s)} endpoint that hands out relay credentials. */
+		public static final String TURN = "io.bosonnetwork.turn";
 
 		private final String serviceId;
 		private final @Nullable String serviceName;
