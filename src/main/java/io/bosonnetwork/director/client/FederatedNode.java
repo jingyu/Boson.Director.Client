@@ -35,22 +35,30 @@ import io.bosonnetwork.Id;
 import io.bosonnetwork.service.Admission;
 
 /**
- * Another super node as this node sees it: the relationship its operator has made with it, if any, and
- * whether it is admitted now and why. Obtained from a {@link DirectorAdmin}. Immutable.
+ * Another super node as this node sees it: its relationship with this node, if any, and whether it is
+ * admitted now and why. Obtained from a {@link DirectorAdmin}. Immutable.
  * <p>
- * A node needs no relationship to be admitted where this node federates openly. A relationship overrides
- * the mode: {@link State#ACTIVE} admits the node, {@link State#SUSPENDED} refuses it. The blacklist
+ * A relationship is made by this node's operator, or by the two nodes agreeing through a
+ * {@link FederationProposal proposal}. A node needs no relationship to be admitted where this node
+ * federates openly. {@link State#ACTIVE} admits the node and {@link State#SUSPENDED} refuses it, whatever
+ * the mode; the pending and declined states count only where admission needs agreement. The blacklist
  * refuses a node whatever its relationship.
  */
 public class FederatedNode {
 	/**
-	 * The operator's decision about a node.
+	 * Where the relationship with a node stands.
 	 */
 	public enum State {
 		/** Admitted, whatever the mode. */
 		ACTIVE,
 		/** Refused, whatever the mode. */
-		SUSPENDED;
+		SUSPENDED,
+		/** This node proposed, and waits for the answer. */
+		PENDING_OUT,
+		/** The node proposed, and waits for this node's operator. */
+		PENDING_IN,
+		/** A proposal either way was declined, or the relationship revoked. */
+		DECLINED;
 
 		String wireName() {
 			return name().toLowerCase(Locale.ROOT);
@@ -113,16 +121,18 @@ public class FederatedNode {
 	}
 
 	/**
-	 * Returns the operator's decision about the node.
+	 * Returns where the relationship with the node stands.
 	 *
-	 * @return an {@link Optional} with the state, or empty if no relationship was made
+	 * @return an {@link Optional} with the state, or empty if no relationship was made, or it is in a
+	 *         state this version doesn't know
 	 */
 	public Optional<State> getState() {
 		return Optional.ofNullable(state);
 	}
 
 	/**
-	 * Returns who made the relationship ({@code admin}).
+	 * Returns who made the relationship: {@code admin} for this node's operator, {@code protocol} for the
+	 * two nodes' agreement.
 	 *
 	 * @return an {@link Optional} with the origin, or empty if no relationship was made
 	 */
@@ -131,7 +141,7 @@ public class FederatedNode {
 	}
 
 	/**
-	 * Returns the operator's note about the node.
+	 * Returns the note about the node: the operator's, or the proposal's.
 	 *
 	 * @return an {@link Optional} with the note, or empty
 	 */
