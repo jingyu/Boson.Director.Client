@@ -20,9 +20,10 @@
  * SOFTWARE.
  */
 
+
 package io.bosonnetwork.director.client;
 
-import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -31,60 +32,75 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import org.jspecify.annotations.Nullable;
 
 import io.bosonnetwork.Id;
+import io.bosonnetwork.service.Admission;
 
 /**
- * A super node this node has federated with, as this node records it. Obtained from a
- * {@link DirectorAdmin}. Immutable.
+ * Another super node as this node sees it: the relationship its operator has made with it, if any, and
+ * whether it is admitted now and why. Obtained from a {@link DirectorAdmin}. Immutable.
  * <p>
- * The descriptive fields (name, logo, website, contact, software and version) are what the other
- * node publishes about itself, and any of them may be absent. The description and reputation are
- * this node's own notes.
+ * A node needs no relationship to be admitted where this node federates openly. A relationship overrides
+ * the mode: {@link State#ACTIVE} admits the node, {@link State#SUSPENDED} refuses it. The blacklist
+ * refuses a node whatever its relationship.
  */
 public class FederatedNode {
+	/**
+	 * The operator's decision about a node.
+	 */
+	public enum State {
+		/** Admitted, whatever the mode. */
+		ACTIVE,
+		/** Refused, whatever the mode. */
+		SUSPENDED;
+
+		String wireName() {
+			return name().toLowerCase(Locale.ROOT);
+		}
+
+		static @Nullable State of(@Nullable String name) {
+			if (name == null)
+				return null;
+			for (State s : values()) {
+				if (s.name().equalsIgnoreCase(name))
+					return s;
+			}
+			return null;
+		}
+	}
+
 	private final Id id;
-	private final List<String> addresses;
-	private final @Nullable String apiEndpoint;
-	private final @Nullable String software;
-	private final @Nullable String version;
-	private final @Nullable String name;
-	private final @Nullable String logo;
-	private final @Nullable String website;
-	private final @Nullable String contact;
-	private final @Nullable String description;
-	private final boolean federated;
-	private final int reputation;
+	private final @Nullable State state;
+	private final @Nullable String origin;
+	private final @Nullable String note;
+	private final Admission.@Nullable Reason admission;
 	private final long createdAt;
 	private final long updatedAt;
 
 	@JsonCreator
-	FederatedNode(@JsonProperty(value = "id", required = true) Id id,
-			@JsonProperty("addresses") @Nullable List<String> addresses,
-			@JsonProperty("apiEndpoint") @Nullable String apiEndpoint,
-			@JsonProperty("software") @Nullable String software,
-			@JsonProperty("version") @Nullable String version,
-			@JsonProperty("name") @Nullable String name,
-			@JsonProperty("logo") @Nullable String logo,
-			@JsonProperty("website") @Nullable String website,
-			@JsonProperty("contact") @Nullable String contact,
-			@JsonProperty("description") @Nullable String description,
-			@JsonProperty("federated") boolean federated,
-			@JsonProperty("reputation") int reputation,
+	FederatedNode(@JsonProperty(value = "nodeId", required = true) Id id,
+			@JsonProperty("state") @Nullable String state,
+			@JsonProperty("origin") @Nullable String origin,
+			@JsonProperty("note") @Nullable String note,
+			@JsonProperty("admission") @Nullable String admission,
 			@JsonProperty("createdAt") long createdAt,
 			@JsonProperty("updatedAt") long updatedAt) {
 		this.id = Objects.requireNonNull(id, "id");
-		this.addresses = addresses != null ? List.copyOf(addresses) : List.of();
-		this.apiEndpoint = apiEndpoint;
-		this.software = software;
-		this.version = version;
-		this.name = name;
-		this.logo = logo;
-		this.website = website;
-		this.contact = contact;
-		this.description = description;
-		this.federated = federated;
-		this.reputation = reputation;
+		this.state = State.of(state);
+		this.origin = origin;
+		this.note = note;
+		this.admission = reason(admission);
 		this.createdAt = createdAt;
 		this.updatedAt = updatedAt;
+	}
+
+	// A reason this version doesn't know is reported as none, rather than failing the whole answer.
+	private static Admission.@Nullable Reason reason(@Nullable String name) {
+		if (name == null)
+			return null;
+		try {
+			return Admission.Reason.valueOf(name);
+		} catch (IllegalArgumentException e) {
+			return null;
+		}
 	}
 
 	/**
@@ -97,117 +113,63 @@ public class FederatedNode {
 	}
 
 	/**
-	 * Returns the network addresses the node was found at.
+	 * Returns the operator's decision about the node.
 	 *
-	 * @return the addresses, possibly empty
+	 * @return an {@link Optional} with the state, or empty if no relationship was made
 	 */
-	public List<String> getAddresses() {
-		return addresses;
+	public Optional<State> getState() {
+		return Optional.ofNullable(state);
 	}
 
 	/**
-	 * Returns the URL of the node's Director API.
+	 * Returns who made the relationship ({@code admin}).
 	 *
-	 * @return the API endpoint, if known
+	 * @return an {@link Optional} with the origin, or empty if no relationship was made
 	 */
-	public Optional<String> getApiEndpoint() {
-		return Optional.ofNullable(apiEndpoint);
+	public Optional<String> getOrigin() {
+		return Optional.ofNullable(origin);
 	}
 
 	/**
-	 * Returns the name of the software the node runs.
+	 * Returns the operator's note about the node.
 	 *
-	 * @return the software name, if published
+	 * @return an {@link Optional} with the note, or empty
 	 */
-	public Optional<String> getSoftware() {
-		return Optional.ofNullable(software);
+	public Optional<String> getNote() {
+		return Optional.ofNullable(note);
 	}
 
 	/**
-	 * Returns the version of the software the node runs.
+	 * Returns why the node is admitted, pending or refused now.
 	 *
-	 * @return the version, if published
+	 * @return an {@link Optional} with the reason, or empty if the node gave one this version doesn't know
 	 */
-	public Optional<String> getVersion() {
-		return Optional.ofNullable(version);
+	public Optional<Admission.Reason> getAdmission() {
+		return Optional.ofNullable(admission);
 	}
 
 	/**
-	 * Returns the node's display name.
+	 * Tells whether the node is admitted now.
 	 *
-	 * @return the name, if published
+	 * @return {@code true} if it is
 	 */
-	public Optional<String> getName() {
-		return Optional.ofNullable(name);
+	public boolean isAdmitted() {
+		return admission != null && admission.decision() == Admission.Decision.ALLOW;
 	}
 
 	/**
-	 * Returns the URL of the node's logo.
+	 * Returns when the relationship was made.
 	 *
-	 * @return the logo URL, if published
-	 */
-	public Optional<String> getLogo() {
-		return Optional.ofNullable(logo);
-	}
-
-	/**
-	 * Returns the node operator's website.
-	 *
-	 * @return the website URL, if published
-	 */
-	public Optional<String> getWebsite() {
-		return Optional.ofNullable(website);
-	}
-
-	/**
-	 * Returns how to contact the node operator.
-	 *
-	 * @return the contact, if published
-	 */
-	public Optional<String> getContact() {
-		return Optional.ofNullable(contact);
-	}
-
-	/**
-	 * Returns this node's description of the federated node.
-	 *
-	 * @return the description, if set
-	 */
-	public Optional<String> getDescription() {
-		return Optional.ofNullable(description);
-	}
-
-	/**
-	 * Tells whether the federation is in force.
-	 *
-	 * @return {@code true} if the node is federated
-	 */
-	public boolean isFederated() {
-		return federated;
-	}
-
-	/**
-	 * Returns the reputation this node gives the federated node.
-	 *
-	 * @return the reputation
-	 */
-	public int getReputation() {
-		return reputation;
-	}
-
-	/**
-	 * Returns when the node was recorded.
-	 *
-	 * @return the creation time, in epoch milliseconds
+	 * @return the creation time, in epoch milliseconds, or 0 if no relationship was made
 	 */
 	public long getCreatedAt() {
 		return createdAt;
 	}
 
 	/**
-	 * Returns when the record was last changed.
+	 * Returns when the relationship last changed.
 	 *
-	 * @return the update time, in epoch milliseconds
+	 * @return the update time, in epoch milliseconds, or 0 if no relationship was made
 	 */
 	public long getUpdatedAt() {
 		return updatedAt;
@@ -215,7 +177,6 @@ public class FederatedNode {
 
 	@Override
 	public String toString() {
-		return "FederatedNode{id=" + id + ", name=" + name + ", apiEndpoint=" + apiEndpoint +
-				", federated=" + federated + ", reputation=" + reputation + "}";
+		return "FederatedNode{id=" + id + ", state=" + state + ", admission=" + admission + "}";
 	}
 }

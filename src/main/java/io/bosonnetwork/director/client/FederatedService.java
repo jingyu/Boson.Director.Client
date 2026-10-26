@@ -20,8 +20,10 @@
  * SOFTWARE.
  */
 
+
 package io.bosonnetwork.director.client;
 
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -32,40 +34,55 @@ import org.jspecify.annotations.Nullable;
 import io.bosonnetwork.Id;
 
 /**
- * A service a federated node shares with this node. Obtained from a {@link DirectorAdmin}.
+ * A service another super node lists in its descriptor. Obtained from a {@link FederatedNodeDescriptor}.
  * Immutable.
+ * <p>
+ * The endpoint is the one the node lists, a hint: where the service is now is its own announcement in
+ * the DHT.
  */
 public class FederatedService {
+	private final String type;
+	private final @Nullable String name;
 	private final Id peerId;
-	private final long fingerprint;
-	private final @Nullable Id nodeId;
-	private final @Nullable String endpoint;
-	private final @Nullable Object extra;
-	private final @Nullable String serviceId;
-	private final @Nullable String serviceName;
-	private final boolean federationEnabled;
+	private final String endpoint;
+	private final boolean federation;
+	private final Map<String, Object> extra;
 
 	@JsonCreator
-	FederatedService(@JsonProperty(value = "peerId", required = true) Id peerId,
-			@JsonProperty("fingerprint") long fingerprint,
-			@JsonProperty("nodeId") @Nullable Id nodeId,
-			@JsonProperty("endpoint") @Nullable String endpoint,
-			@JsonProperty("extra") @Nullable Object extra,
-			@JsonProperty("serviceId") @Nullable String serviceId,
-			@JsonProperty("serviceName") @Nullable String serviceName,
-			@JsonProperty("federationEnabled") boolean federationEnabled) {
+	FederatedService(@JsonProperty(value = "type", required = true) String type,
+			@JsonProperty("name") @Nullable String name,
+			@JsonProperty(value = "peerId", required = true) Id peerId,
+			@JsonProperty(value = "endpoint", required = true) String endpoint,
+			@JsonProperty("federation") boolean federation,
+			@JsonProperty("extra") @Nullable Map<String, Object> extra) {
+		this.type = Objects.requireNonNull(type, "type");
+		this.name = name;
 		this.peerId = Objects.requireNonNull(peerId, "peerId");
-		this.fingerprint = fingerprint;
-		this.nodeId = nodeId;
-		this.endpoint = endpoint;
-		this.extra = extra;
-		this.serviceId = serviceId;
-		this.serviceName = serviceName;
-		this.federationEnabled = federationEnabled;
+		this.endpoint = Objects.requireNonNull(endpoint, "endpoint");
+		this.federation = federation;
+		this.extra = extra != null ? Map.copyOf(extra) : Map.of();
 	}
 
 	/**
-	 * Returns the id of the peer the service announces on the DHT.
+	 * Returns the service type id, such as {@code io.bosonnetwork.photonmessaging}.
+	 *
+	 * @return the type
+	 */
+	public String getType() {
+		return type;
+	}
+
+	/**
+	 * Returns the service's display name.
+	 *
+	 * @return an {@link Optional} with the name, or empty
+	 */
+	public Optional<String> getName() {
+		return Optional.ofNullable(name);
+	}
+
+	/**
+	 * Returns the service's peer id.
 	 *
 	 * @return the peer id
 	 */
@@ -74,72 +91,34 @@ public class FederatedService {
 	}
 
 	/**
-	 * Returns the fingerprint that tells the service's announcements apart from other peers under the
-	 * same peer id.
+	 * Returns the endpoint the node lists for the service.
 	 *
-	 * @return the fingerprint
+	 * @return the endpoint
 	 */
-	public long getFingerprint() {
-		return fingerprint;
+	public String getEndpoint() {
+		return endpoint;
 	}
 
 	/**
-	 * Returns the node the service runs on.
+	 * Tells whether other nodes may use the service.
 	 *
-	 * @return the node id, if reported
+	 * @return {@code true} if they may
 	 */
-	public Optional<Id> getNodeId() {
-		return Optional.ofNullable(nodeId);
+	public boolean isFederation() {
+		return federation;
 	}
 
 	/**
-	 * Returns the URL clients reach the service at.
+	 * Returns the service's extra data.
 	 *
-	 * @return the endpoint, if the service has one
+	 * @return an unmodifiable map, empty if none
 	 */
-	public Optional<String> getEndpoint() {
-		return Optional.ofNullable(endpoint);
-	}
-
-	/**
-	 * Returns the service's extra information: a {@code Map} when it is structured, otherwise its raw
-	 * bytes as an unpadded base64url string.
-	 *
-	 * @return the extra information, if any
-	 */
-	public Optional<Object> getExtra() {
-		return Optional.ofNullable(extra);
-	}
-
-	/**
-	 * Returns the service id, such as {@code io.bosonnetwork.messaging}.
-	 *
-	 * @return the service id, if reported
-	 */
-	public Optional<String> getServiceId() {
-		return Optional.ofNullable(serviceId);
-	}
-
-	/**
-	 * Returns the service's display name.
-	 *
-	 * @return the name, if reported
-	 */
-	public Optional<String> getServiceName() {
-		return Optional.ofNullable(serviceName);
-	}
-
-	/**
-	 * Tells whether the service takes part in federation.
-	 *
-	 * @return {@code true} if federation is enabled for the service
-	 */
-	public boolean isFederationEnabled() {
-		return federationEnabled;
+	public Map<String, Object> getExtra() {
+		return extra;
 	}
 
 	@Override
 	public String toString() {
-		return "FederatedService{peerId=" + peerId + ", serviceId=" + serviceId + ", endpoint=" + endpoint + "}";
+		return "FederatedService{type=" + type + ", peerId=" + peerId + ", endpoint=" + endpoint + "}";
 	}
 }

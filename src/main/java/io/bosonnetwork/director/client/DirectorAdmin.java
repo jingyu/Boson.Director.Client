@@ -1142,7 +1142,7 @@ public class DirectorAdmin {
 	// ---- Federation ----------------------------------------------------------------------------
 
 	/**
-	 * Lists every node this node has federated with.
+	 * Lists the nodes this node's operator has made a relationship with: admitted or suspended.
 	 *
 	 * @return a future completing with the nodes
 	 */
@@ -1152,7 +1152,7 @@ public class DirectorAdmin {
 	}
 
 	/**
-	 * Lists one page of federated nodes.
+	 * Lists one page of the nodes this node's operator has made a relationship with.
 	 *
 	 * @param page     the page number, from 1
 	 * @param pageSize the number of nodes per page
@@ -1165,37 +1165,65 @@ public class DirectorAdmin {
 	}
 
 	/**
-	 * Looks up a federated node.
+	 * Looks up another node: its relationship with this node, if any, and whether it is admitted now.
+	 * Any node can be looked up; one this node's operator never decided about has no relationship, and
+	 * its admission is the mode's.
 	 *
 	 * @param nodeId the node id
-	 * @return a future completing with the node, or empty if this node has not federated with it
+	 * @return a future completing with the node
 	 */
-	public CompletableFuture<Optional<FederatedNode>> getFederatedNode(Id nodeId) {
+	public CompletableFuture<FederatedNode> getFederatedNode(Id nodeId) {
 		checkOpen();
-		return find(new Query(federatedNodePath(nodeId)), FederatedNode.class);
+		return find(new Query(federatedNodePath(nodeId)), FederatedNode.class).thenApply(found ->
+				found.orElseThrow(() -> new IllegalStateException("The Director answered no node for " + nodeId)));
 	}
 
 	/**
-	 * Updates what this node records about a federated node. Only the fields set on the update are
-	 * changed.
+	 * Admits a node, whatever the federation mode: makes its relationship {@link FederatedNode.State#ACTIVE}.
+	 * The blacklist still refuses it.
 	 *
 	 * @param nodeId the node id
-	 * @param update the fields to change
-	 * @return a future completing when the node is updated
-	 * @throws IllegalArgumentException if the update changes nothing
+	 * @param note   the operator's note, up to 256 characters, or {@code null}
+	 * @return a future completing with the node as it now stands
+	 * @throws IllegalArgumentException if the note is longer than 256 characters
 	 */
-	public CompletableFuture<Void> updateFederatedNode(Id nodeId, FederatedNodeUpdate update) {
-		checkOpen();
-		String path = federatedNodePath(nodeId);
-		checkUpdate(update.isEmpty(), "federated node");
-		return execute(HttpMethod.PUT, path, update.fields());
+	public CompletableFuture<FederatedNode> admitFederatedNode(Id nodeId, @Nullable String note) {
+		return putFederatedNode(nodeId, FederatedNode.State.ACTIVE, note);
 	}
 
 	/**
-	 * Removes a node from this node's federation.
+	 * Refuses a node, whatever the federation mode: makes its relationship
+	 * {@link FederatedNode.State#SUSPENDED}.
 	 *
 	 * @param nodeId the node id
-	 * @return a future completing when the node is removed
+	 * @param note   the operator's note, up to 256 characters, or {@code null}
+	 * @return a future completing with the node as it now stands
+	 * @throws IllegalArgumentException if the note is longer than 256 characters
+	 */
+	public CompletableFuture<FederatedNode> suspendFederatedNode(Id nodeId, @Nullable String note) {
+		return putFederatedNode(nodeId, FederatedNode.State.SUSPENDED, note);
+	}
+
+	private CompletableFuture<FederatedNode> putFederatedNode(Id nodeId, FederatedNode.State state, @Nullable String note) {
+		checkOpen();
+		Objects.requireNonNull(nodeId, "nodeId");
+		if (note != null && note.length() > 256)
+			throw new IllegalArgumentException("Note longer than 256 characters");
+		Map<String, @Nullable Object> body = new LinkedHashMap<>();
+		body.put("state", state.wireName());
+		if (note != null)
+			body.put("note", note);
+
+		return transport.deliver(call(HttpMethod.PUT, federatedNodePath(nodeId), body).compose(res ->
+				res.decode(b -> Json.objectMapper().readValue(b.getBytes(), FederatedNode.class))));
+	}
+
+	/**
+	 * Removes this node's relationship with another node, which the federation mode then decides for.
+	 *
+	 * @param nodeId the node id
+	 * @return a future completing when the relationship is removed; it fails with
+	 *         {@link io.bosonnetwork.director.client.exceptions.NotFoundException} if there was none
 	 */
 	public CompletableFuture<Void> removeFederatedNode(Id nodeId) {
 		checkOpen();
@@ -1203,127 +1231,15 @@ public class DirectorAdmin {
 	}
 
 	/**
-	 * Lists the services a federated node shares with this node.
+	 * Fetches what another node says it runs: its signed descriptor, which this node fetches from the
+	 * other node and verifies.
 	 *
 	 * @param nodeId the node id
-	 * @return a future completing with the services, empty if the node shares none
+	 * @return a future completing with the descriptor, or empty if it could not be reached or verified
 	 */
-	public CompletableFuture<List<FederatedService>> listFederatedServices(Id nodeId) {
+	public CompletableFuture<Optional<FederatedNodeDescriptor>> getFederatedNodeDescriptor(Id nodeId) {
 		checkOpen();
-		return fetchList(new Query("/federation/services/" + Objects.requireNonNull(nodeId, "nodeId").toBase58String()),
-				FederatedService.class);
-	}
-
-	/**
-	 * Proposes federation to another super node. This node looks the other one up on the DHT, checks
-	 * it, and sends it the proposal; the call completes once the other node has answered. Every
-	 * proposal is recorded, whatever the outcome, and can be inspected with
-	 * {@link #listFederationProposals()}.
-	 *
-	 * @param nodeId the id of the node to federate with
-	 * @return a future completing with the node as it now stands in the federation, or empty if the
-	 *         proposal did not make it a federated node; it fails with
-	 *         {@link io.bosonnetwork.director.client.exceptions.ForbiddenException} if the node is
-	 *         blacklisted, with {@link io.bosonnetwork.director.client.exceptions.ConflictException} if
-	 *         this node is already federated with it, with
-	 *         {@link io.bosonnetwork.director.client.exceptions.RateLimitException} while the last
-	 *         proposal to it is in its cooldown period, and with a {@link DirectorException} of status
-	 *         422 if it cannot be found or validated as a super node
-	 */
-	public CompletableFuture<Optional<FederatedNode>> proposeFederation(Id nodeId) {
-		checkOpen();
-		Map<String, @Nullable Object> body = new LinkedHashMap<>();
-		body.put("nodeId", Objects.requireNonNull(nodeId, "nodeId"));
-
-		// The Director answers with the federated node, or with a JSON null when there is none.
-		return transport.deliver(call(HttpMethod.POST, "/federation/proposals", body).compose(res -> res.decode(b -> {
-			if (b.toString(StandardCharsets.UTF_8).trim().equals("null"))
-				return Optional.<FederatedNode>empty();
-
-			return Optional.of(Json.objectMapper().readValue(b.getBytes(), FederatedNode.class));
-		})));
-	}
-
-	/**
-	 * Lists every federation proposal, made or received.
-	 *
-	 * @return a future completing with the proposals
-	 */
-	public CompletableFuture<PaginatedResult<FederationProposal>> listFederationProposals() {
-		checkOpen();
-		return fetchPage(new Query("/federation/proposals"), FederationProposal.class);
-	}
-
-	/**
-	 * Lists the federation proposals that match a filter.
-	 *
-	 * @param filter the node, role and statuses to match
-	 * @return a future completing with the proposals
-	 */
-	public CompletableFuture<PaginatedResult<FederationProposal>> listFederationProposals(ProposalFilter filter) {
-		checkOpen();
-		return fetchPage(proposalQuery(filter), FederationProposal.class);
-	}
-
-	/**
-	 * Lists one page of the federation proposals that match a filter.
-	 *
-	 * @param filter   the node, role and statuses to match
-	 * @param page     the page number, from 1
-	 * @param pageSize the number of proposals per page
-	 * @param sort     the order, by {@code id}, {@code nodeId}, {@code name}, {@code role}, {@code status},
-	 *                 {@code proposedAt}, {@code confirmedAt}, {@code createdAt} or {@code updatedAt}
-	 * @return a future completing with the page
-	 * @throws IllegalArgumentException if the page or page size is below 1
-	 */
-	public CompletableFuture<PaginatedResult<FederationProposal>> listFederationProposals(ProposalFilter filter,
-			long page, long pageSize, Sort... sort) {
-		checkOpen();
-		return fetchPage(proposalQuery(filter).page(page, pageSize).sort(sort), FederationProposal.class);
-	}
-
-	/**
-	 * Looks up a federation proposal.
-	 *
-	 * @param proposalId the proposal id
-	 * @return a future completing with the proposal, or empty if there is no such proposal
-	 * @throws IllegalArgumentException if the id is not positive
-	 */
-	public CompletableFuture<Optional<FederationProposal>> getFederationProposal(long proposalId) {
-		checkOpen();
-		return find(new Query(proposalPath(proposalId)), FederationProposal.class);
-	}
-
-	/**
-	 * Removes a federation proposal from the record. A federation it established is unaffected.
-	 *
-	 * @param proposalId the proposal id
-	 * @return a future completing when the proposal is removed
-	 * @throws IllegalArgumentException if the id is not positive
-	 */
-	public CompletableFuture<Void> removeFederationProposal(long proposalId) {
-		checkOpen();
-		return execute(HttpMethod.DELETE, proposalPath(proposalId), null);
-	}
-
-	private static Query proposalQuery(ProposalFilter filter) {
-		Objects.requireNonNull(filter, "filter");
-		Query query = new Query("/federation/proposals");
-		Id nodeId = filter.getNodeId();
-		if (nodeId != null)
-			query.add("nodeId", nodeId.toBase58String());
-
-		// One role flag filters by that role.
-		FederationProposal.Role role = filter.getRole();
-		if (role == FederationProposal.Role.OFFER)
-			query.add("offer", "true");
-		else if (role == FederationProposal.Role.ANSWER)
-			query.add("answer", "true");
-
-		for (FederationProposal.Status status : filter.getStatuses())
-			query.add("status", status.toString());
-
-		return query;
+		return find(new Query(federatedNodePath(nodeId) + "/descriptor"), FederatedNodeDescriptor.class);
 	}
 
 	// ---- Requests ------------------------------------------------------------------------------
@@ -1468,10 +1384,6 @@ public class DirectorAdmin {
 
 	private static String federatedNodePath(Id nodeId) {
 		return "/federation/nodes/" + Objects.requireNonNull(nodeId, "nodeId").toBase58String();
-	}
-
-	private static String proposalPath(long proposalId) {
-		return "/federation/proposals/" + checkId(proposalId, "proposalId");
 	}
 
 	private static long checkId(long id, String name) {

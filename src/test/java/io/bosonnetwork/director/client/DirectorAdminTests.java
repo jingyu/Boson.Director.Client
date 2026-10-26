@@ -151,7 +151,7 @@ public class DirectorAdminTests {
 			assertThrows(IllegalArgumentException.class, () -> admin.getBlacklistedHost("12345"));
 			assertThrows(IllegalArgumentException.class, () -> admin.addBlacklistedHost("", null));
 			assertThrows(IllegalArgumentException.class,
-					() -> admin.updateFederatedNode(someone, new FederatedNodeUpdate()));
+					() -> admin.suspendFederatedNode(someone, "x".repeat(257)));
 			assertThrows(NullPointerException.class, () -> admin.removeUser(null));
 		} finally {
 			admin.close().get(10, TimeUnit.SECONDS);
