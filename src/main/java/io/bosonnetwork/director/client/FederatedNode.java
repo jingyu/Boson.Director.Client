@@ -82,6 +82,7 @@ public class FederatedNode {
 	private final Admission.@Nullable Reason admission;
 	private final long createdAt;
 	private final long updatedAt;
+	private final @Nullable FederatedNodeHealth health;
 
 	@JsonCreator
 	FederatedNode(@JsonProperty(value = "nodeId", required = true) Id id,
@@ -90,7 +91,8 @@ public class FederatedNode {
 			@JsonProperty("note") @Nullable String note,
 			@JsonProperty("admission") @Nullable String admission,
 			@JsonProperty("createdAt") long createdAt,
-			@JsonProperty("updatedAt") long updatedAt) {
+			@JsonProperty("updatedAt") long updatedAt,
+			@JsonProperty("health") @Nullable FederatedNodeHealth health) {
 		this.id = Objects.requireNonNull(id, "id");
 		this.state = State.of(state);
 		this.origin = origin;
@@ -98,6 +100,7 @@ public class FederatedNode {
 		this.admission = reason(admission);
 		this.createdAt = createdAt;
 		this.updatedAt = updatedAt;
+		this.health = health;
 	}
 
 	// A reason this version doesn't know is reported as none, rather than failing the whole answer.
@@ -183,6 +186,16 @@ public class FederatedNode {
 	 */
 	public long getUpdatedAt() {
 		return updatedAt;
+	}
+
+	/**
+	 * Returns how working with the node has gone lately.
+	 *
+	 * @return an {@link Optional} with the health, or empty if nothing about the node was observed
+	 *         within the last day
+	 */
+	public Optional<FederatedNodeHealth> getHealth() {
+		return Optional.ofNullable(health);
 	}
 
 	@Override

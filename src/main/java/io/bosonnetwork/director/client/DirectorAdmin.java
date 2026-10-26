@@ -1243,6 +1243,30 @@ public class DirectorAdmin {
 	}
 
 	/**
+	 * Lists how working with other nodes has gone lately: every node this node heard from within the last
+	 * day, whether it has a relationship with it or not, the most recently seen first.
+	 *
+	 * @return a future completing with the nodes' health
+	 */
+	public CompletableFuture<PaginatedResult<FederatedNodeHealth>> listFederatedNodeHealth() {
+		checkOpen();
+		return fetchPage(new Query("/federation/health"), FederatedNodeHealth.class);
+	}
+
+	/**
+	 * Lists one page of the nodes' health, the most recently seen first.
+	 *
+	 * @param page     the page number, from 1
+	 * @param pageSize the number of nodes per page
+	 * @return a future completing with the page
+	 * @throws IllegalArgumentException if the page or page size is below 1
+	 */
+	public CompletableFuture<PaginatedResult<FederatedNodeHealth>> listFederatedNodeHealth(long page, long pageSize) {
+		checkOpen();
+		return fetchPage(new Query("/federation/health").page(page, pageSize), FederatedNodeHealth.class);
+	}
+
+	/**
 	 * Proposes a relationship to another node, for nodes that federate in {@code mutual} mode. The
 	 * proposal is sent at once, and again until the other node answers.
 	 *
