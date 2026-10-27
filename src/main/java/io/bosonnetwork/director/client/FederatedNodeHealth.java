@@ -56,6 +56,7 @@ public class FederatedNodeHealth {
 	private final int demand;
 	private final long lastDemandAt;
 	private final Admission.@Nullable Reason lastDemandReason;
+	private final boolean proposable;
 
 	@JsonCreator
 	FederatedNodeHealth(@JsonProperty(value = "nodeId", required = true) Id nodeId,
@@ -68,7 +69,8 @@ public class FederatedNodeHealth {
 			@JsonProperty("lastHour") @Nullable Map<String, Integer> lastHour,
 			@JsonProperty("demand") int demand,
 			@JsonProperty("lastDemandAt") long lastDemandAt,
-			@JsonProperty("lastDemandReason") @Nullable String lastDemandReason) {
+			@JsonProperty("lastDemandReason") @Nullable String lastDemandReason,
+			@JsonProperty("proposable") boolean proposable) {
 		this.nodeId = Objects.requireNonNull(nodeId, "nodeId");
 		this.lastSeenAt = lastSeenAt;
 		this.lastSuccessAt = lastSuccessAt;
@@ -89,6 +91,7 @@ public class FederatedNodeHealth {
 		this.demand = demand;
 		this.lastDemandAt = lastDemandAt;
 		this.lastDemandReason = reason(lastDemandReason);
+		this.proposable = proposable;
 	}
 
 	// A reason this version doesn't know is left out, as an unknown outcome is.
@@ -221,6 +224,16 @@ public class FederatedNodeHealth {
 	 */
 	public Optional<Admission.Reason> getLastDemandReason() {
 		return Optional.ofNullable(lastDemandReason);
+	}
+
+	/**
+	 * Tells whether a proposal from this node's operator could help with the demand: this node makes
+	 * proposals, nothing it has with the node stands in the way, and the node isn't known to take none.
+	 *
+	 * @return {@code true} if so; {@code false} also when there is no demand
+	 */
+	public boolean isProposable() {
+		return proposable;
 	}
 
 	@Override
