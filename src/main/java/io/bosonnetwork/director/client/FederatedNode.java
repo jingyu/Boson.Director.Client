@@ -135,7 +135,8 @@ public class FederatedNode {
 
 	/**
 	 * Returns who made the relationship: {@code admin} for this node's operator, {@code protocol} for the
-	 * two nodes' agreement.
+	 * two nodes' agreement, {@code auto} for an agreement from a proposal this node made on its own because
+	 * a local service wanted to reach the other node.
 	 *
 	 * @return an {@link Optional} with the origin, or empty if no relationship was made
 	 */

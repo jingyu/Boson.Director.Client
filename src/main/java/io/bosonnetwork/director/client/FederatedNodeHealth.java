@@ -34,6 +34,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import org.jspecify.annotations.Nullable;
 
 import io.bosonnetwork.Id;
+import io.bosonnetwork.service.Admission;
 import io.bosonnetwork.service.FederationContext.Outcome;
 
 /**
@@ -52,6 +53,9 @@ public class FederatedNodeHealth {
 	private final @Nullable String lastFailureDetail;
 	private final int consecutiveFailures;
 	private final Map<Outcome, Integer> lastHour;
+	private final int demand;
+	private final long lastDemandAt;
+	private final Admission.@Nullable Reason lastDemandReason;
 
 	@JsonCreator
 	FederatedNodeHealth(@JsonProperty(value = "nodeId", required = true) Id nodeId,
@@ -61,7 +65,10 @@ public class FederatedNodeHealth {
 			@JsonProperty("lastFailure") @Nullable String lastFailure,
 			@JsonProperty("lastFailureDetail") @Nullable String lastFailureDetail,
 			@JsonProperty("consecutiveFailures") int consecutiveFailures,
-			@JsonProperty("lastHour") @Nullable Map<String, Integer> lastHour) {
+			@JsonProperty("lastHour") @Nullable Map<String, Integer> lastHour,
+			@JsonProperty("demand") int demand,
+			@JsonProperty("lastDemandAt") long lastDemandAt,
+			@JsonProperty("lastDemandReason") @Nullable String lastDemandReason) {
 		this.nodeId = Objects.requireNonNull(nodeId, "nodeId");
 		this.lastSeenAt = lastSeenAt;
 		this.lastSuccessAt = lastSuccessAt;
@@ -79,6 +86,20 @@ public class FederatedNodeHealth {
 			});
 		}
 		this.lastHour = Collections.unmodifiableMap(counts);
+		this.demand = demand;
+		this.lastDemandAt = lastDemandAt;
+		this.lastDemandReason = reason(lastDemandReason);
+	}
+
+	// A reason this version doesn't know is left out, as an unknown outcome is.
+	private static Admission.@Nullable Reason reason(@Nullable String name) {
+		if (name == null)
+			return null;
+		try {
+			return Admission.Reason.valueOf(name);
+		} catch (IllegalArgumentException e) {
+			return null;
+		}
 	}
 
 	// An outcome this version doesn't know is left out, rather than failing the whole answer.
@@ -171,6 +192,35 @@ public class FederatedNodeHealth {
 	 */
 	public Map<Outcome, Integer> getLastHour() {
 		return lastHour;
+	}
+
+	/**
+	 * Returns how often local services wanted to reach the node and were held or refused for want of a
+	 * relationship with it: a node to propose to, if the count grows.
+	 *
+	 * @return the count, 0 if none
+	 */
+	public int getDemand() {
+		return demand;
+	}
+
+	/**
+	 * Returns when local services last wanted to reach the node and couldn't.
+	 *
+	 * @return the time, in epoch milliseconds, or 0 if never within the last day
+	 */
+	public long getLastDemandAt() {
+		return lastDemandAt;
+	}
+
+	/**
+	 * Returns why local services last couldn't reach the node: {@code PENDING}, {@code NO_RELATIONSHIP}
+	 * or {@code DECLINED}.
+	 *
+	 * @return an {@link Optional} with the reason, or empty
+	 */
+	public Optional<Admission.Reason> getLastDemandReason() {
+		return Optional.ofNullable(lastDemandReason);
 	}
 
 	@Override
