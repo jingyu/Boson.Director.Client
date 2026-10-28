@@ -80,6 +80,7 @@ public class FederatedNode {
 	private final @Nullable String origin;
 	private final @Nullable String note;
 	private final Admission.@Nullable Reason admission;
+	private final Admission.@Nullable Reason reach;
 	private final long createdAt;
 	private final long updatedAt;
 	private final @Nullable FederatedNodeHealth health;
@@ -90,6 +91,7 @@ public class FederatedNode {
 			@JsonProperty("origin") @Nullable String origin,
 			@JsonProperty("note") @Nullable String note,
 			@JsonProperty("admission") @Nullable String admission,
+			@JsonProperty("reach") @Nullable String reach,
 			@JsonProperty("createdAt") long createdAt,
 			@JsonProperty("updatedAt") long updatedAt,
 			@JsonProperty("health") @Nullable FederatedNodeHealth health) {
@@ -98,6 +100,7 @@ public class FederatedNode {
 		this.origin = origin;
 		this.note = note;
 		this.admission = reason(admission);
+		this.reach = reason(reach);
 		this.createdAt = createdAt;
 		this.updatedAt = updatedAt;
 		this.health = health;
@@ -169,6 +172,18 @@ public class FederatedNode {
 	 */
 	public boolean isAdmitted() {
 		return admission != null && admission.decision() == Admission.Decision.ALLOW;
+	}
+
+	/**
+	 * Returns what this node's services are told about sending to the node now. It may differ from the
+	 * admission: an open node admits a node in mutual mode, but holds its traffic to it until the two
+	 * agree.
+	 *
+	 * @return an {@link Optional} with the reason, or empty from a server that doesn't say, or with a
+	 *         reason this version doesn't know
+	 */
+	public Optional<Admission.Reason> getReach() {
+		return Optional.ofNullable(reach);
 	}
 
 	/**
