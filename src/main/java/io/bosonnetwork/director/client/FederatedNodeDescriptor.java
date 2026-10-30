@@ -74,7 +74,15 @@ public class FederatedNodeDescriptor {
 		this.logo = logo;
 		this.website = website;
 		this.contact = contact;
-		this.mode = FederationMode.ofWireName(mode);
+		FederationMode m = null;
+		if (mode != null) {
+			try {
+				m = FederationMode.ofWireName(mode);
+			} catch (IllegalArgumentException ignore) {
+				// A mode this version doesn't know: left out, like any other unknown value.
+			}
+		}
+		this.mode = m;
 		this.protocols = protocols != null ? List.copyOf(protocols) : List.of();
 		this.capabilities = capabilities != null ? List.copyOf(capabilities) : List.of();
 		this.services = services != null ? List.copyOf(services) : List.of();
@@ -148,7 +156,8 @@ public class FederatedNodeDescriptor {
 	/**
 	 * Returns how the node decides whom it federates with.
 	 *
-	 * @return an {@link Optional} with the mode, or empty if it says none this version knows
+	 * @return an {@link Optional} with the mode, or empty if it says none, or one this version doesn't know
+	 *         (a newer node's)
 	 */
 	public Optional<FederationMode> getMode() {
 		return Optional.ofNullable(mode);
