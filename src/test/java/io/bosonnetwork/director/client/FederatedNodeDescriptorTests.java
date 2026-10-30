@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 
 import io.bosonnetwork.Id;
 import io.bosonnetwork.json.Json;
+import io.bosonnetwork.service.FederatedNodeDescriptor;
 import io.bosonnetwork.service.FederationMode;
 
 class FederatedNodeDescriptorTests {

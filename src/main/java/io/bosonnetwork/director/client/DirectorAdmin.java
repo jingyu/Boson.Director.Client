@@ -54,6 +54,7 @@ import io.bosonnetwork.director.client.exceptions.DirectorException;
 import io.bosonnetwork.director.client.exceptions.NotFoundException;
 import io.bosonnetwork.json.Json;
 import io.bosonnetwork.service.AccessScope;
+import io.bosonnetwork.service.FederatedNodeDescriptor;
 import io.bosonnetwork.web.PaginatedResult;
 import io.bosonnetwork.web.client.AccessTokenSource;
 import io.bosonnetwork.web.client.SelfIssuedAccessTokens;
