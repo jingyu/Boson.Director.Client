@@ -185,6 +185,10 @@ exceptions - with these differences:
 - A list call returns everything, or one page with the totals (`PaginatedResult`). Where the Director
   supports ordering, it takes `Sort` keys naming fields of the listed objects, such as
   `Sort.desc("createdAt")`; each list call's Javadoc names the fields it accepts.
+- `listFederatedHosts()` lists local verification observations by selected IPv4 address or IPv6 `/64`;
+  its paginated overload takes a page and page size. `FederatedHost.getHost()` is empty for checks
+  that failed before address selection. Counts describe distinct nodes and can overlap when a
+  failed refresh leaves a valid descriptor retained. Recent unsuccessful checks cover the last hour.
 
 ```java
 DirectorAdmin admin = DirectorAdmin.builder()

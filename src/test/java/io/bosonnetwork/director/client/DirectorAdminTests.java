@@ -116,6 +116,8 @@ public class DirectorAdminTests {
 		assertTrue(admin.isClosed());
 		assertThrows(IllegalStateException.class, admin::getNodeStatus);
 		assertThrows(IllegalStateException.class, admin::listUsers);
+		assertThrows(IllegalStateException.class, admin::listFederatedHosts);
+		assertThrows(IllegalStateException.class, () -> admin.listFederatedHosts(1, 10));
 	}
 
 	@Test
@@ -135,6 +137,8 @@ public class DirectorAdminTests {
 			Id someone = Id.random();
 			assertThrows(IllegalArgumentException.class, () -> admin.listUsers(0, 10));
 			assertThrows(IllegalArgumentException.class, () -> admin.listUsers(1, 0));
+			assertThrows(IllegalArgumentException.class, () -> admin.listFederatedHosts(0, 10));
+			assertThrows(IllegalArgumentException.class, () -> admin.listFederatedHosts(1, 0));
 			assertThrows(IllegalArgumentException.class, () -> admin.updateUser(someone, new UserUpdate()));
 			assertThrows(IllegalArgumentException.class, () -> admin.getSubscription(0));
 			assertThrows(IllegalArgumentException.class, () -> admin.cancelPayment(-1));

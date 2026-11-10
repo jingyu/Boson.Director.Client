@@ -1268,6 +1268,32 @@ public class DirectorAdmin {
 	}
 
 	/**
+	 * Lists local descriptor-check observations by destination: failed nodes first, then verified nodes,
+	 * then host. Checks without a selected destination are grouped last. Reading the list starts no
+	 * remote lookups. Counts describe distinct nodes; a retained descriptor and a failed refresh can
+	 * count in both columns. Recent unsuccessful observations cover the last hour.
+	 *
+	 * @return a future completing with the host observations
+	 */
+	public CompletableFuture<PaginatedResult<FederatedHost>> listFederatedHosts() {
+		checkOpen();
+		return fetchPage(new Query("/federation/hosts"), FederatedHost.class);
+	}
+
+	/**
+	 * Lists one page of host observations in the same order as {@link #listFederatedHosts()}.
+	 *
+	 * @param page     the page number, from 1
+	 * @param pageSize the number of hosts per page
+	 * @return a future completing with the page
+	 * @throws IllegalArgumentException if the page or page size is below 1
+	 */
+	public CompletableFuture<PaginatedResult<FederatedHost>> listFederatedHosts(long page, long pageSize) {
+		checkOpen();
+		return fetchPage(new Query("/federation/hosts").page(page, pageSize), FederatedHost.class);
+	}
+
+	/**
 	 * Proposes a relationship to another node, for nodes that federate in {@code mutual} mode. The
 	 * proposal is sent at once, and again until the other node answers.
 	 *
