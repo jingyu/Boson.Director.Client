@@ -118,6 +118,14 @@ public class DirectorAdminTests {
 		assertThrows(IllegalStateException.class, admin::listUsers);
 		assertThrows(IllegalStateException.class, admin::listFederatedHosts);
 		assertThrows(IllegalStateException.class, () -> admin.listFederatedHosts(1, 10));
+		assertThrows(IllegalStateException.class, () -> admin.listFederatedNodes(nodeId));
+		assertThrows(IllegalStateException.class, () -> admin.listFederatedNodes(nodeId, 1, 10));
+		assertThrows(IllegalStateException.class, () -> admin.listFederatedNodeHealth(nodeId));
+		assertThrows(IllegalStateException.class, () -> admin.listFederatedNodeHealth(nodeId, 1, 10));
+		assertThrows(IllegalStateException.class, () -> admin.listFederatedHosts("unresolved"));
+		assertThrows(IllegalStateException.class, () -> admin.listFederatedHosts("unresolved", 1, 10));
+		assertThrows(IllegalStateException.class, () -> admin.listFederationProposals(nodeId, null, null));
+		assertThrows(IllegalStateException.class, () -> admin.listFederationProposals(nodeId, null, null, 1, 10));
 	}
 
 	@Test
@@ -139,6 +147,14 @@ public class DirectorAdminTests {
 			assertThrows(IllegalArgumentException.class, () -> admin.listUsers(1, 0));
 			assertThrows(IllegalArgumentException.class, () -> admin.listFederatedHosts(0, 10));
 			assertThrows(IllegalArgumentException.class, () -> admin.listFederatedHosts(1, 0));
+			assertThrows(IllegalArgumentException.class, () -> admin.listFederatedNodes(someone, 0, 10));
+			assertThrows(IllegalArgumentException.class, () -> admin.listFederatedNodes(someone, 1, 0));
+			assertThrows(IllegalArgumentException.class, () -> admin.listFederatedNodeHealth(someone, 0, 10));
+			assertThrows(IllegalArgumentException.class, () -> admin.listFederatedNodeHealth(someone, 1, 0));
+			assertThrows(IllegalArgumentException.class, () -> admin.listFederatedHosts("host", 0, 10));
+			assertThrows(IllegalArgumentException.class, () -> admin.listFederatedHosts("host", 1, 0));
+			assertThrows(IllegalArgumentException.class, () -> admin.listFederationProposals(someone, null, null, 0, 10));
+			assertThrows(IllegalArgumentException.class, () -> admin.listFederationProposals(someone, null, null, 1, 0));
 			assertThrows(IllegalArgumentException.class, () -> admin.updateUser(someone, new UserUpdate()));
 			assertThrows(IllegalArgumentException.class, () -> admin.getSubscription(0));
 			assertThrows(IllegalArgumentException.class, () -> admin.cancelPayment(-1));

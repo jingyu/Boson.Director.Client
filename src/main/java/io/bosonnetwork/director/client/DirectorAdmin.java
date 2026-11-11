@@ -1148,8 +1148,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the nodes
 	 */
 	public CompletableFuture<PaginatedResult<FederatedNode>> listFederatedNodes() {
-		checkOpen();
-		return fetchPage(new Query("/federation/nodes"), FederatedNode.class);
+		return listFederatedNodes(null);
 	}
 
 	/**
@@ -1161,8 +1160,33 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the page or page size is below 1
 	 */
 	public CompletableFuture<PaginatedResult<FederatedNode>> listFederatedNodes(long page, long pageSize) {
+		return listFederatedNodes(null, page, pageSize);
+	}
+
+	/**
+	 * Lists existing relationships for an exact node ID. Starts no remote lookup.
+	 *
+	 * @param nodeId only this node, or {@code null} for all
+	 * @return a future completing with the matching items
+	 */
+	public CompletableFuture<PaginatedResult<FederatedNode>> listFederatedNodes(@Nullable Id nodeId) {
 		checkOpen();
-		return fetchPage(new Query("/federation/nodes").page(page, pageSize), FederatedNode.class);
+		return fetchPage(federationNodeQuery("/federation/nodes", nodeId), FederatedNode.class);
+	}
+
+	/**
+	 * Lists a page of existing relationships for an exact node ID; totals describe the filtered set.
+	 *
+	 * @param nodeId   only this node, or {@code null} for all
+	 * @param page     the page number, from 1
+	 * @param pageSize the number of items per page
+	 * @return a future completing with the matching page
+	 * @throws IllegalArgumentException if the page or page size is below 1
+	 */
+	public CompletableFuture<PaginatedResult<FederatedNode>> listFederatedNodes(
+			@Nullable Id nodeId, long page, long pageSize) {
+		checkOpen();
+		return fetchPage(federationNodeQuery("/federation/nodes", nodeId).page(page, pageSize), FederatedNode.class);
 	}
 
 	/**
@@ -1250,8 +1274,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the nodes' health
 	 */
 	public CompletableFuture<PaginatedResult<FederatedNodeHealth>> listFederatedNodeHealth() {
-		checkOpen();
-		return fetchPage(new Query("/federation/health"), FederatedNodeHealth.class);
+		return listFederatedNodeHealth(null);
 	}
 
 	/**
@@ -1263,8 +1286,33 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the page or page size is below 1
 	 */
 	public CompletableFuture<PaginatedResult<FederatedNodeHealth>> listFederatedNodeHealth(long page, long pageSize) {
+		return listFederatedNodeHealth(null, page, pageSize);
+	}
+
+	/**
+	 * Lists retained local activity for an exact node ID. Starts no remote lookup.
+	 *
+	 * @param nodeId only this node, or {@code null} for all
+	 * @return a future completing with the matching items
+	 */
+	public CompletableFuture<PaginatedResult<FederatedNodeHealth>> listFederatedNodeHealth(@Nullable Id nodeId) {
 		checkOpen();
-		return fetchPage(new Query("/federation/health").page(page, pageSize), FederatedNodeHealth.class);
+		return fetchPage(federationNodeQuery("/federation/health", nodeId), FederatedNodeHealth.class);
+	}
+
+	/**
+	 * Lists a page of retained local activity for an exact node ID; totals describe the filtered set.
+	 *
+	 * @param nodeId   only this node, or {@code null} for all
+	 * @param page     the page number, from 1
+	 * @param pageSize the number of items per page
+	 * @return a future completing with the matching page
+	 * @throws IllegalArgumentException if the page or page size is below 1
+	 */
+	public CompletableFuture<PaginatedResult<FederatedNodeHealth>> listFederatedNodeHealth(
+			@Nullable Id nodeId, long page, long pageSize) {
+		checkOpen();
+		return fetchPage(federationNodeQuery("/federation/health", nodeId).page(page, pageSize), FederatedNodeHealth.class);
 	}
 
 	/**
@@ -1276,8 +1324,7 @@ public class DirectorAdmin {
 	 * @return a future completing with the host observations
 	 */
 	public CompletableFuture<PaginatedResult<FederatedHost>> listFederatedHosts() {
-		checkOpen();
-		return fetchPage(new Query("/federation/hosts"), FederatedHost.class);
+		return listFederatedHosts(null);
 	}
 
 	/**
@@ -1289,8 +1336,41 @@ public class DirectorAdmin {
 	 * @throws IllegalArgumentException if the page or page size is below 1
 	 */
 	public CompletableFuture<PaginatedResult<FederatedHost>> listFederatedHosts(long page, long pageSize) {
+		return listFederatedHosts(null, page, pageSize);
+	}
+
+	/**
+	 * Lists local observations whose displayed host contains the text, ignoring case. Null hosts match
+	 * against "Unresolved host". This is literal text matching, without DNS or CIDR range evaluation.
+	 *
+	 * @param host host text to match; null, empty or blank means all hosts
+	 * @return a future completing with the matching host observations
+	 */
+	public CompletableFuture<PaginatedResult<FederatedHost>> listFederatedHosts(@Nullable String host) {
 		checkOpen();
-		return fetchPage(new Query("/federation/hosts").page(page, pageSize), FederatedHost.class);
+		return fetchPage(federationHostQuery(host), FederatedHost.class);
+	}
+
+	/**
+	 * Lists a page of host observations matching literal case-insensitive text, with filtered totals.
+	 *
+	 * @param host     host text to match; null, empty or blank means all hosts
+	 * @param page     the page number, from 1
+	 * @param pageSize the number of hosts per page
+	 * @return a future completing with the matching page
+	 * @throws IllegalArgumentException if the page or page size is below 1
+	 */
+	public CompletableFuture<PaginatedResult<FederatedHost>> listFederatedHosts(
+			@Nullable String host, long page, long pageSize) {
+		checkOpen();
+		return fetchPage(federationHostQuery(host).page(page, pageSize), FederatedHost.class);
+	}
+
+	private static Query federationHostQuery(@Nullable String host) {
+		Query query = new Query("/federation/hosts");
+		if (host != null && !host.trim().isEmpty())
+			query.add("host", host.trim());
+		return query;
 	}
 
 	/**
@@ -1325,8 +1405,7 @@ public class DirectorAdmin {
 	 */
 	public CompletableFuture<PaginatedResult<FederationProposal>> listFederationProposals(
 			FederationProposal.@Nullable Role role, FederationProposal.@Nullable Status status) {
-		checkOpen();
-		return fetchPage(proposalQuery(role, status), FederationProposal.class);
+		return listFederationProposals(null, role, status);
 	}
 
 	/**
@@ -1341,12 +1420,50 @@ public class DirectorAdmin {
 	 */
 	public CompletableFuture<PaginatedResult<FederationProposal>> listFederationProposals(
 			FederationProposal.@Nullable Role role, FederationProposal.@Nullable Status status, long page, long pageSize) {
-		checkOpen();
-		return fetchPage(proposalQuery(role, status).page(page, pageSize), FederationProposal.class);
+		return listFederationProposals(null, role, status, page, pageSize);
 	}
 
-	private static Query proposalQuery(FederationProposal.@Nullable Role role, FederationProposal.@Nullable Status status) {
-		Query query = new Query("/federation/proposals");
+	/**
+	 * Lists proposals for an exact node ID, combined with role and status filters, latest first.
+	 *
+	 * @param nodeId only this node, or {@code null} for all
+	 * @param role   only this role, or {@code null} for both
+	 * @param status only this status, or {@code null} for all
+	 * @return a future completing with the matching proposals
+	 */
+	public CompletableFuture<PaginatedResult<FederationProposal>> listFederationProposals(@Nullable Id nodeId,
+			FederationProposal.@Nullable Role role, FederationProposal.@Nullable Status status) {
+		checkOpen();
+		return fetchPage(proposalQuery(nodeId, role, status), FederationProposal.class);
+	}
+
+	/**
+	 * Lists a page of proposals matching node, role and status, with filtered totals.
+	 *
+	 * @param nodeId   only this node, or {@code null} for all
+	 * @param role     only this role, or {@code null} for both
+	 * @param status   only this status, or {@code null} for all
+	 * @param page     the page number, from 1
+	 * @param pageSize the number of proposals per page
+	 * @return a future completing with the matching page
+	 * @throws IllegalArgumentException if the page or page size is below 1
+	 */
+	public CompletableFuture<PaginatedResult<FederationProposal>> listFederationProposals(@Nullable Id nodeId,
+			FederationProposal.@Nullable Role role, FederationProposal.@Nullable Status status, long page, long pageSize) {
+		checkOpen();
+		return fetchPage(proposalQuery(nodeId, role, status).page(page, pageSize), FederationProposal.class);
+	}
+
+	private static Query federationNodeQuery(String path, @Nullable Id nodeId) {
+		Query query = new Query(path);
+		if (nodeId != null)
+			query.add("nodeId", nodeId.toBase58String());
+		return query;
+	}
+
+	private static Query proposalQuery(@Nullable Id nodeId, FederationProposal.@Nullable Role role,
+			FederationProposal.@Nullable Status status) {
+		Query query = federationNodeQuery("/federation/proposals", nodeId);
 		if (role != null)
 			query.add("role", role.wireName());
 		if (status != null)

@@ -189,6 +189,18 @@ exceptions - with these differences:
   its paginated overload takes a page and page size. `FederatedHost.getHost()` is empty for checks
   that failed before address selection. Counts describe distinct nodes and can overlap when a
   failed refresh leaves a valid descriptor retained. Recent unsuccessful checks cover the last hour.
+- `listFederatedNodes(nodeId)` and `listFederatedNodeHealth(nodeId)` filter existing relationships
+  or retained local activity by exact `Id`. Their paginated overloads take `nodeId, page, pageSize`.
+  A node without a relationship stays absent from the relationship list even if it has activity.
+- `listFederationProposals(nodeId, role, status)` combines exact node ID with optional role/status;
+  its paginated overload adds `page, pageSize`. A null criterion leaves that field unfiltered.
+- `listFederatedHosts(host)` filters displayed host keys by case-insensitive literal substring;
+  its paginated overload takes `host, page, pageSize`. Surrounding whitespace is trimmed, and
+  null/blank means all hosts. Unattributed checks match `Unresolved host`. Host filtering performs
+  no DNS lookup, CIDR range expansion or wildcard matching.
+- Federation list filters apply before counting and pagination, preserve existing ordering and
+  start no discovery or verification. Filtered totals describe only matching items; a valid but
+  unmatched criterion returns an empty result. Existing unfiltered overloads remain available.
 
 ```java
 DirectorAdmin admin = DirectorAdmin.builder()
